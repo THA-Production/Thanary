@@ -1,7 +1,7 @@
 {
   "name": "nova-browser",
   "productName": "Nova Browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A simple web browser built on Electron (Chromium).",
   "author": "Thanary",
   "repository": {
