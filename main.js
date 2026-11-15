@@ -1,7 +1,14 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net } = require('electron');
 const { autoUpdater } = require('electron-updater');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { spawn, execFile } = require('child_process');
+const { Readable } = require('stream');
+const { pipeline } = require('stream/promises');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
 
 const SEARCH_URL = 'https://duckduckgo.com/?q=';
 const DEFAULT_GROUP = 'default';
@@ -764,8 +771,11 @@ const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4 hours
 let manualUpdateCheck = false;
 
 function setupAutoUpdate() {
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true; // installs the downloaded update when the app quits
+  // Windows uses electron-updater's normal download and install. On macOS, Apple's updater
+  // engine refuses to install over an app that has no Apple Developer ID signature, so Mac
+  // downloads and swaps the app itself (see downloadMacUpdate below).
+  autoUpdater.autoDownload = !isMac;
+  autoUpdater.autoInstallOnAppQuit = !isMac; // installs the downloaded update when the app quits
 
   autoUpdater.on('error', (error) => {
     console.error('Update error:', error == null ? 'unknown' : error.message);
@@ -779,6 +789,9 @@ function setupAutoUpdate() {
       manualUpdateCheck = false;
       dialog.showMessageBox({ type: 'info', message: 'You are up to date.', detail: `Thanary ${app.getVersion()} is the latest version.` });
     }
+  });
+  autoUpdater.on('update-available', (info) => {
+    if (isMac) downloadMacUpdate(info);
   });
   autoUpdater.on('update-downloaded', (info) => {
     manualUpdateCheck = false;
@@ -797,6 +810,154 @@ function setupAutoUpdate() {
   checkForUpdates(false);
   setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
 }
+
+// ----- macOS self-updater -----
+// Downloads the new version from our GitHub Release, checks it against the checksum that was
+// published with it, unpacks it, then a small helper script swaps the app once Thanary quits.
+
+const RELEASES_URL = 'https://github.com/THA-Production/Thanary/releases';
+const APP_BUNDLE_ID = 'com.thanary.browser';
+
+// Runs after this process has exited: replace the app (rolling back if that fails), then reopen.
+const MAC_INSTALL_SCRIPT = `#!/bin/sh
+PID="$1"; NEW="$2"; TARGET="$3"; RELAUNCH="$4"
+i=0
+while kill -0 "$PID" 2>/dev/null && [ "$i" -lt 60 ]; do sleep 0.5; i=$((i+1)); done
+BACKUP="$TARGET.old-$$"
+if mv "$TARGET" "$BACKUP"; then
+  if mv "$NEW" "$TARGET"; then
+    rm -rf "$BACKUP"
+  else
+    rm -rf "$TARGET"
+    mv "$BACKUP" "$TARGET"
+  fi
+fi
+xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null
+if [ "$RELAUNCH" = "1" ]; then open "$TARGET"; fi
+rm -rf "$(dirname "$NEW")"
+`;
+
+let macUpdateBusy = false;
+let stagedMacUpdate = null; // { newApp, target, version } once downloaded, checked and unpacked
+let macInstallStarted = false;
+let blockedNoticeShown = false;
+
+class UpdateBlocked extends Error {}
+
+// Where the running app lives, if we are allowed to replace it.
+function macInstallTarget() {
+  const target = path.resolve(process.execPath, '..', '..', '..'); // .../Thanary.app
+  if (!target.endsWith('.app')) throw new UpdateBlocked('This copy of Thanary cannot update itself.');
+  if (target.startsWith('/Volumes/') || target.includes('/AppTranslocation/')) {
+    throw new UpdateBlocked('Move Thanary to your Applications folder and open it from there. It cannot update while running from a disk image.');
+  }
+  try {
+    fs.accessSync(path.dirname(target), fs.constants.W_OK);
+  } catch {
+    throw new UpdateBlocked(`Thanary is not allowed to replace itself in ${path.dirname(target)}.`);
+  }
+  return target;
+}
+
+function pickMacZip(files) {
+  const zips = files.filter((f) => /\.zip$/i.test(f.url));
+  const wantArm = process.arch === 'arm64';
+  return zips.find((f) => /arm64/i.test(f.url) === wantArm) || null;
+}
+
+async function downloadMacUpdate(info) {
+  if (macUpdateBusy || stagedMacUpdate) return;
+  macUpdateBusy = true;
+  const wasManual = manualUpdateCheck;
+  try {
+    if (!/^[0-9A-Za-z.+-]+$/.test(String(info.version))) throw new Error('Unexpected version number.');
+    const target = macInstallTarget();
+    const file = pickMacZip(info.files || []);
+    if (!file) throw new Error('This release has no macOS download.');
+
+    if (wasManual) {
+      dialog.showMessageBox({ type: 'info', message: `Downloading Thanary ${info.version}…`, detail: 'It downloads in the background. You will be asked to restart when it is ready.' });
+    }
+
+    const dir = path.join(app.getPath('temp'), `thanary-update-${info.version}`);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    const zipPath = path.join(dir, 'update.zip');
+
+    // Only ever download from our own repo, using just the file name from the release info.
+    const url = `${RELEASES_URL}/download/v${info.version}/${encodeURIComponent(path.basename(file.url))}`;
+    const res = await net.fetch(url);
+    if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}).`);
+    const hash = crypto.createHash('sha512');
+    await pipeline(
+      Readable.fromWeb(res.body),
+      async function* (source) {
+        for await (const chunk of source) { hash.update(chunk); yield chunk; }
+      },
+      fs.createWriteStream(zipPath),
+    );
+    if (hash.digest('base64') !== file.sha512) throw new Error('The downloaded update did not match its checksum, so it was discarded.');
+
+    await execFileAsync('/usr/bin/ditto', ['-x', '-k', zipPath, dir]);
+    fs.rmSync(zipPath, { force: true });
+    const appName = fs.readdirSync(dir).find((n) => n.endsWith('.app'));
+    if (!appName) throw new Error('The update did not contain an app.');
+    const newApp = path.join(dir, appName);
+
+    await execFileAsync('/usr/bin/codesign', ['--verify', '--deep', '--strict', newApp]);
+    const { stdout } = await execFileAsync('/usr/bin/plutil', ['-extract', 'CFBundleIdentifier', 'raw', '-o', '-', path.join(newApp, 'Contents', 'Info.plist')]);
+    if (stdout.trim() !== APP_BUNDLE_ID) throw new Error('The update is not a Thanary build.');
+
+    stagedMacUpdate = { newApp, target, version: info.version };
+    manualUpdateCheck = false;
+    const { response } = await dialog.showMessageBox({
+      type: 'info',
+      message: `Thanary ${info.version} is ready to install.`,
+      detail: 'Restart now to update, or it will install the next time you quit.',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 0) {
+      startMacInstaller(true);
+      app.quit();
+    }
+  } catch (error) {
+    console.error('Mac update failed:', error);
+    const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof UpdateBlocked) {
+      if (wasManual || !blockedNoticeShown) {
+        blockedNoticeShown = true;
+        const { response } = await dialog.showMessageBox({
+          type: 'info',
+          message: 'A new version of Thanary is available.',
+          detail: `${message}\n\nYou can download it from GitHub instead.`,
+          buttons: ['Open download page', 'Not now'],
+          defaultId: 0,
+          cancelId: 1,
+        });
+        if (response === 0) shell.openExternal(`${RELEASES_URL}/latest`);
+      }
+    } else if (wasManual) {
+      dialog.showMessageBox({ type: 'error', message: 'Could not install the update.', detail: message });
+    }
+  } finally {
+    macUpdateBusy = false;
+    manualUpdateCheck = false;
+  }
+}
+
+function startMacInstaller(relaunch) {
+  if (!stagedMacUpdate || macInstallStarted) return;
+  macInstallStarted = true;
+  const { newApp, target } = stagedMacUpdate;
+  const script = path.join(path.dirname(newApp), 'install.sh');
+  fs.writeFileSync(script, MAC_INSTALL_SCRIPT, { mode: 0o700 });
+  spawn('/bin/sh', [script, String(process.pid), newApp, target, relaunch ? '1' : '0'], { detached: true, stdio: 'ignore' }).unref();
+}
+
+// If the user chose "Later", the update is applied when they eventually quit.
+app.on('quit', () => { if (isMac) startMacInstaller(false); });
 
 function checkForUpdates(manual) {
   if (!app.isPackaged) {
