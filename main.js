@@ -1,5 +1,7 @@
 const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net } = require('electron');
-const { autoUpdater } = require('electron-updater');
+// electron-updater is large, so it is only loaded when an update check actually runs.
+let updater = null;
+const getUpdater = () => updater || (updater = require('electron-updater').autoUpdater);
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -10,7 +12,9 @@ const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 
-const SEARCH_URL = 'https://duckduckgo.com/?q=';
+const SEARCH_URL = 'https://www.google.com/search?q=';
+// Searches made before Google became the default were saved as DuckDuckGo URLs.
+const isSearchURL = (url) => url.startsWith(SEARCH_URL) || url.startsWith('https://duckduckgo.com/?q=');
 const DEFAULT_GROUP = 'default';
 const HISTORY_LIMIT = 3000;
 const isMac = process.platform === 'darwin';
@@ -46,7 +50,7 @@ function loadStore() {
   }
   if (!data || typeof data !== 'object') {
     bookmarks = [
-      { id: uid(), title: 'DuckDuckGo', url: 'https://duckduckgo.com/', favicon: null, favorite: true },
+      { id: uid(), title: 'Google', url: 'https://www.google.com/', favicon: null, favorite: true },
       { id: uid(), title: 'Wikipedia', url: 'https://www.wikipedia.org/', favicon: null, favorite: true },
       { id: uid(), title: 'YouTube', url: 'https://www.youtube.com/', favicon: null, favorite: true },
       { id: uid(), title: 'GitHub', url: 'https://github.com/', favicon: null, favorite: true },
@@ -70,27 +74,46 @@ function loadStore() {
   if (groups.some((g) => g.id === data.activeGroupId)) activeGroupId = data.activeGroupId;
 }
 
-function saveNow() {
+// Big inline icons would bloat the file that is rewritten after every navigation.
+const slimIcon = (favicon) => (typeof favicon === 'string' && favicon.length < 2000 ? favicon : null);
+
+let writeSeq = 0;
+
+// sync=true is for quitting (the process may exit right after); otherwise the write happens
+// off the main thread so it can't stall scrolling or animations.
+function writeState(sync) {
   clearTimeout(saveTimer);
   saveTimer = null;
-  const data = {
+  const json = JSON.stringify({
     groups: groups.filter((g) => g.id !== DEFAULT_GROUP),
     activeGroupId,
-    tabs: tabs.map((t) => ({ groupId: t.groupId, url: t.url, title: t.title, favicon: t.favicon, active: activeByGroup[t.groupId] === t.id })),
+    tabs: tabs.map((t) => ({ groupId: t.groupId, url: t.url, title: t.title, favicon: slimIcon(t.favicon), active: activeByGroup[t.groupId] === t.id })),
     bookmarks,
     readingList,
-    history,
+    history: history.map((h) => ({ ...h, favicon: slimIcon(h.favicon) })),
     settings,
-  };
-  try {
-    fs.writeFileSync(storeFile(), JSON.stringify(data));
-  } catch (error) {
-    console.error('Could not save state:', error.message);
+  });
+  const file = storeFile();
+  const seq = ++writeSeq;
+  if (sync) {
+    try {
+      fs.writeFileSync(file, json);
+    } catch (error) {
+      console.error('Could not save state:', error.message);
+    }
+    return;
   }
+  const temp = file + '.tmp';
+  fs.promises
+    .writeFile(temp, json)
+    .then(() => { if (seq === writeSeq) return fs.promises.rename(temp, file); }) // a newer write wins
+    .catch((error) => console.error('Could not save state:', error.message));
 }
 
+const saveNow = () => writeState(true);
+
 function save() {
-  if (!saveTimer) saveTimer = setTimeout(saveNow, 800);
+  if (!saveTimer) saveTimer = setTimeout(() => writeState(false), 2500);
 }
 
 function uid() {
@@ -136,8 +159,10 @@ function layout() {
   if (!win || !ui) return;
   const { width, height } = win.getContentBounds();
   ui.setBounds({ x: 0, y: 0, width, height });
-  const bounds = pageBounds();
-  for (const t of tabs) if (t.view) t.view.setBounds(bounds);
+  // Only the visible page is resized. Hidden tabs get the right size when they are shown, so
+  // resizing the window or the sidebar doesn't relayout every open page.
+  const tab = activeTab();
+  if (tab && tab.view) tab.view.setBounds(pageBounds());
 }
 
 // The chrome view sits under the page views, and is lifted above them while it
@@ -150,7 +175,16 @@ function applyZ() {
 
 function updateVisibility() {
   const activeId = activeTabId();
-  for (const t of tabs) if (t.view) t.view.setVisible(t.id === activeId);
+  const bounds = pageBounds();
+  for (const t of tabs) {
+    if (!t.view) continue;
+    if (t.id === activeId) {
+      t.view.setBounds(bounds);
+      t.view.setVisible(true);
+    } else {
+      t.view.setVisible(false);
+    }
+  }
 }
 
 // ---------- State sent to the chrome UI ----------
@@ -173,7 +207,16 @@ function send(channel, ...args) {
   if (ui && !ui.webContents.isDestroyed()) ui.webContents.send(channel, ...args);
 }
 
+// Page events (title, icon, loading) can arrive many times a second, especially while several
+// tabs load. pushSoon() merges them into one update; push() sends right away (user actions).
+let pushTimer = null;
+function pushSoon() {
+  if (!pushTimer) pushTimer = setTimeout(push, 40);
+}
+
 function push() {
+  clearTimeout(pushTimer);
+  pushTimer = null;
   const active = activeTab();
   const nav = active && active.view ? active.view.webContents.navigationHistory : null;
   send('state', {
@@ -193,7 +236,7 @@ function push() {
 function topSites() {
   const counts = new Map();
   for (const h of history) {
-    if (h.url.startsWith(SEARCH_URL)) continue;
+    if (isSearchURL(h.url)) continue;
     const entry = counts.get(h.url) || { url: h.url, title: h.title, favicon: h.favicon || null, count: 0 };
     entry.count += 1;
     if (!entry.title && h.title) entry.title = h.title;
@@ -202,8 +245,15 @@ function topSites() {
   return [...counts.values()].sort((a, b) => b.count - a.count).slice(0, 8);
 }
 
+// Bookmarks, reading list and history change on every navigation, and building the top sites
+// walks the whole history, so updates are merged and sent at most every 150 ms.
+let libraryTimer = null;
 function pushLibrary() {
-  send('library', { bookmarks, readingList, history: history.slice(0, 500), topSites: topSites() });
+  if (libraryTimer) return;
+  libraryTimer = setTimeout(() => {
+    libraryTimer = null;
+    send('library', { bookmarks, readingList, history: history.slice(0, 300), topSites: topSites() });
+  }, 150);
 }
 
 function focusAddress() {
@@ -213,6 +263,13 @@ function focusAddress() {
 }
 
 // ---------- History, bookmarks, reading list ----------
+
+// The page being loaded is always one of the newest history entries, so don't scan all of them.
+function recentEntry(url) {
+  const limit = Math.min(history.length, 25);
+  for (let i = 0; i < limit; i++) if (history[i].url === url) return history[i];
+  return null;
+}
 
 function addHistory(tab) {
   if (!isWebURL(tab.url)) return;
@@ -276,14 +333,14 @@ function ensureView(tab) {
   });
   wc.on('page-title-updated', (_e, title) => {
     tab.title = title;
-    const entry = history.find((h) => h.url === tab.url);
+    const entry = recentEntry(tab.url);
     if (entry && !entry.title) { entry.title = title; pushLibrary(); }
-    push();
+    pushSoon();
     save();
   });
   wc.on('page-favicon-updated', (_e, icons) => {
     tab.favicon = icons[0] || null;
-    const entry = history.find((h) => h.url === tab.url);
+    const entry = recentEntry(tab.url);
     if (entry && !entry.favicon) entry.favicon = tab.favicon;
     // Bookmarks saved without an icon pick one up the first time their site is visited.
     if (tab.favicon) {
@@ -293,23 +350,23 @@ function ensureView(tab) {
       }
       if (changed) { save(); pushLibrary(); }
     }
-    push();
+    pushSoon();
   });
-  wc.on('did-start-loading', () => { tab.loading = true; push(); });
+  wc.on('did-start-loading', () => { tab.loading = true; pushSoon(); });
   wc.on('did-stop-loading', () => {
     tab.loading = false;
-    push();
-    setTimeout(() => captureThumb(tab), 500);
+    pushSoon();
+    setTimeout(() => captureThumb(tab), 1500);
   });
   wc.on('did-navigate', (_e, url) => {
     tab.url = url;
     tab.favicon = null;
     addHistory(tab);
-    push();
+    pushSoon();
     save();
   });
   wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
-    if (isMainFrame) { tab.url = url; push(); save(); }
+    if (isMainFrame) { tab.url = url; pushSoon(); save(); }
   });
   wc.on('found-in-page', (_e, result) => {
     if (tab.id === activeTabId()) send('cmd', 'found', { active: result.activeMatchOrdinal, total: result.matches });
@@ -321,11 +378,16 @@ function ensureView(tab) {
 }
 
 // Keeps a small screenshot of the tab for the tab overview.
-async function captureThumb(tab) {
+// Grabbing and encoding a screenshot is expensive and runs on the main thread, so it is
+// rate-limited per tab; `force` is for when the overview is actually being opened.
+const THUMB_MIN_AGE_MS = 15000;
+async function captureThumb(tab, force) {
   if (!tab.view || tab.id !== activeTabId() || tab.view.webContents.isDestroyed()) return;
+  if (!force && tab.thumbAt && Date.now() - tab.thumbAt < THUMB_MIN_AGE_MS) return;
+  tab.thumbAt = Date.now();
   try {
     const image = await tab.view.webContents.capturePage();
-    if (!image.isEmpty()) tab.thumb = 'data:image/jpeg;base64,' + image.resize({ width: 560 }).toJPEG(72).toString('base64');
+    if (!image.isEmpty()) tab.thumb = 'data:image/jpeg;base64,' + image.resize({ width: 480, quality: 'good' }).toJPEG(65).toString('base64');
   } catch {
     // The page went away while capturing; the overview falls back to a plain card.
   }
@@ -743,7 +805,7 @@ const actions = {
   'ui.overlay': (on) => { overlay = !!on; applyZ(); if (overlay && ui) ui.webContents.focus(); },
   'overview.request': async () => {
     const active = activeTab();
-    if (active) await captureThumb(active);
+    if (active) await captureThumb(active, true);
     const thumbs = {};
     for (const t of tabs) if (t.groupId === activeGroupId && t.thumb) thumbs[t.id] = t.thumb;
     send('cmd', 'thumbs', thumbs);
@@ -770,7 +832,12 @@ ipcMain.on('act', (event, name, ...args) => {
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4 hours
 let manualUpdateCheck = false;
 
+let updaterReady = false;
+
 function setupAutoUpdate() {
+  if (updaterReady) return;
+  updaterReady = true;
+  const autoUpdater = getUpdater();
   // Windows uses electron-updater's normal download and install. On macOS, Apple's updater
   // engine refuses to install over an app that has no Apple Developer ID signature, so Mac
   // downloads and swaps the app itself (see downloadMacUpdate below).
@@ -807,8 +874,14 @@ function setupAutoUpdate() {
       .then(({ response }) => { if (response === 0) autoUpdater.quitAndInstall(); });
   });
 
-  checkForUpdates(false);
-  setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
+}
+
+// The first check waits a few seconds so it doesn't compete with the first page load.
+function startAutoUpdate() {
+  setTimeout(() => {
+    checkForUpdates(false);
+    setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
+  }, 8000);
 }
 
 // ----- macOS self-updater -----
@@ -965,8 +1038,9 @@ function checkForUpdates(manual) {
     if (manual) dialog.showMessageBox({ type: 'info', message: 'Updates only work in the installed app.', detail: 'You are running a development build.' });
     return;
   }
+  setupAutoUpdate();
   manualUpdateCheck = manual;
-  autoUpdater.checkForUpdates().catch(() => {}); // errors are reported by the 'error' handler
+  getUpdater().checkForUpdates().catch(() => {}); // errors are reported by the 'error' handler
 }
 
 // ---------- Menu and shortcuts ----------
@@ -1087,10 +1161,17 @@ app.whenReady().then(() => {
     app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
   }
 
+  // Sites such as Google and YouTube serve slower fallback pages, or refuse sign-in, when the
+  // user agent says "Electron". Identify as plain Chrome instead.
+  const ua = session.defaultSession.getUserAgent().replace(/\s(?:Electron|Thanary)\/\S+/gi, '');
+  session.defaultSession.setUserAgent(ua);
+  // Open the connection to Google now, so the first search doesn't pay for DNS and TLS.
+  session.defaultSession.preconnect({ url: 'https://www.google.com', numSockets: 2 });
+
   loadStore();
   buildMenu();
   createWindow();
-  setupAutoUpdate();
+  startAutoUpdate();
 
   nativeTheme.on('updated', () => {
     if (win && !isMac) win.setTitleBarOverlay(overlayColors());

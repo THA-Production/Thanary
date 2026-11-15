@@ -13,7 +13,7 @@
   --tab-active: rgba(255, 255, 255, 0.9);
   --page-bg: #fbfbfd;
   --card: #ffffff;
-  --pop: rgba(250, 250, 252, 0.86);
+  --pop: rgba(250, 250, 252, 0.97);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 20px rgba(0, 0, 0, 0.07);
   --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.07), 0 16px 36px rgba(0, 0, 0, 0.13);
   --ease: cubic-bezier(0.28, 0.11, 0.32, 1);
@@ -36,7 +36,7 @@
     --tab-active: rgba(255, 255, 255, 0.15);
     --page-bg: #101012;
     --card: #1c1c1e;
-    --pop: rgba(44, 44, 46, 0.86);
+    --pop: rgba(44, 44, 46, 0.97);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.3);
     --shadow-lift: 0 2px 4px rgba(0, 0, 0, 0.3), 0 16px 36px rgba(0, 0, 0, 0.5);
   }
@@ -91,7 +91,7 @@ i svg { width: 18px; height: 18px; }
   width: 0;
   overflow: hidden;
   background: var(--sidebar);
-  transition: width 0.42s var(--ease);
+  transition: width 0.28s var(--ease);
 }
 
 body.sidebar-open #sidebar { width: var(--sidebar-w); }
@@ -109,7 +109,7 @@ body.mac.fullscreen .sb-head { height: 12px; }
   min-height: 0;
   opacity: 0;
   transform: translateX(-14px);
-  transition: opacity 0.3s var(--ease), transform 0.42s var(--ease);
+  transition: opacity 0.2s var(--ease), transform 0.28s var(--ease);
 }
 
 body.sidebar-open #panes { opacity: 1; transform: none; }
@@ -122,7 +122,7 @@ body.sidebar-open #panes { opacity: 1; transform: none; }
   opacity: 0;
   transform: translateX(42%);
   pointer-events: none;
-  transition: transform 0.42s var(--ease), opacity 0.26s var(--ease);
+  transition: transform 0.3s var(--ease), opacity 0.2s var(--ease);
 }
 
 .pane.active { opacity: 1; transform: none; pointer-events: auto; }
@@ -191,6 +191,7 @@ input.rename {
 .pane-head .back:hover { background: var(--hover); }
 .pane-head .back svg { width: 15px; height: 15px; }
 .pane-body { display: flex; flex-direction: column; gap: 1px; }
+.pane-body .row { content-visibility: auto; contain-intrinsic-size: auto 32px; }
 
 .text-btn { color: var(--accent); font-size: 12px; padding: 4px 8px; border-radius: 6px; }
 .text-btn:hover { background: var(--hover); }
@@ -224,7 +225,7 @@ input.rename {
   gap: 10px;
   height: 52px;
   padding: 0 10px;
-  transition: padding 0.42s var(--ease);
+  transition: padding 0.28s var(--ease);
 }
 
 body.mac:not(.sidebar-open):not(.fullscreen) #toolbar { padding-left: 88px; }
@@ -249,7 +250,7 @@ body.win #toolbar { padding-right: 148px; }
 .tb.small { width: 26px; height: 24px; }
 .tb.small svg { width: 14px; height: 14px; }
 
-#address-wrap { flex: 0 1 580px; min-width: 160px; transition: flex-basis 0.45s var(--spring); }
+#address-wrap { flex: 0 1 580px; min-width: 160px; transition: flex-basis 0.3s var(--spring); }
 #address-wrap:has(.focused) { flex-basis: 700px; }
 
 #address-field {
@@ -327,24 +328,25 @@ body.win #toolbar { padding-right: 148px; }
   left: 0;
   bottom: 0;
   height: 2.5px;
-  width: 0;
+  width: 100%;
   background: var(--accent);
-  border-radius: 0 2px 2px 0;
+  transform: scaleX(0);
+  transform-origin: left;
   opacity: 0;
 }
 
 #progress.run { opacity: 1; animation: loading 14s cubic-bezier(0.1, 0.7, 0.2, 1) forwards; }
-#progress.done { animation: none; width: 100%; opacity: 0; transition: width 0.28s ease-out, opacity 0.3s ease 0.2s; }
+#progress.done { animation: none; transform: scaleX(1); opacity: 0; transition: transform 0.28s ease-out, opacity 0.3s ease 0.2s; }
 
 @keyframes loading {
-  0% { width: 3%; }
-  25% { width: 55%; }
-  100% { width: 90%; }
+  0% { transform: scaleX(0.03); }
+  25% { transform: scaleX(0.55); }
+  100% { transform: scaleX(0.9); }
 }
 
 /* ---------- Favorites bar ---------- */
 
-#favbar { height: 0; overflow: hidden; transition: height 0.36s var(--ease); }
+#favbar { height: 0; overflow: hidden; transition: height 0.26s var(--ease); }
 body.favbar-open #favbar { height: 28px; }
 #favs { display: flex; justify-content: center; gap: 2px; height: 28px; padding: 0 12px 6px; overflow: hidden; }
 
@@ -375,7 +377,7 @@ body.favbar-open #favbar { height: 28px; }
   color: var(--text2);
   font-size: 12px;
   overflow: hidden;
-  transition: flex-grow 0.34s var(--spring), opacity 0.24s var(--ease), margin 0.34s var(--spring),
+  transition: flex-grow 0.26s var(--spring), opacity 0.18s var(--ease), margin 0.26s var(--spring),
     background 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease);
 }
 
@@ -432,7 +434,7 @@ body.favbar-open #favbar { height: 28px; }
   overflow: hidden;
   border-bottom: 1px solid var(--hair);
   color: var(--text2);
-  transition: height 0.32s var(--ease);
+  transition: height 0.24s var(--ease);
 }
 
 body.finding #findbar { height: 41px; }
@@ -484,7 +486,7 @@ body.start #start, body.overview #overview { opacity: 1; visibility: visible; tr
 .reveal {
   opacity: 0;
   transform: translateY(24px) scale(0.985);
-  transition: opacity 0.7s var(--ease), transform 0.95s var(--spring);
+  transition: opacity 0.45s var(--ease), transform 0.6s var(--spring);
 }
 
 .reveal.in { opacity: 1; transform: none; }
@@ -511,7 +513,7 @@ body.start #start, body.overview #overview { opacity: 1; visibility: visible; tr
   min-width: 0;
 }
 
-.card.in { transition: transform 0.5s var(--spring), box-shadow 0.5s var(--spring), opacity 0.7s var(--ease); }
+.card.in { transition: transform 0.4s var(--spring), box-shadow 0.4s var(--spring), opacity 0.45s var(--ease); }
 .card.in:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); }
 .card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -590,7 +592,6 @@ body.start #start, body.overview #overview { opacity: 1; visibility: visible; tr
   padding: 6px;
   border-radius: 14px;
   background: var(--pop);
-  backdrop-filter: blur(30px) saturate(1.7);
   box-shadow: 0 0 0 0.5px var(--hair), var(--shadow-lift);
   opacity: 0;
   transform: translateY(-8px) scale(0.98);

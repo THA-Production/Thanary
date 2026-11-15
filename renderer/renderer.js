@@ -114,16 +114,47 @@ function syncOverlay() {
   act('ui.overlay', want);
 }
 
-// Tell the main process where the web page area starts, so the page view
-// follows the sidebar and bars while they animate.
+// Tell the main process where the web page area starts. Resizing a live web page on every
+// animation frame is what made the sidebar and bars janky, so the page moves just once:
+// straight away when it is about to shrink (so it doesn't cover the sliding sidebar), or when
+// the animation has finished when it is about to grow.
+const FAVBAR_H = 28; // keep in sync with styles.css
+const FINDBAR_H = 41;
+const FINDBAR_CLOSED_H = 1;
+const INSET_ANIMATION_MS = 300;
 let lastInsets = { left: -1, top: -1 };
-function reportInsets() {
-  const rect = page.getBoundingClientRect();
-  if (rect.left === lastInsets.left && rect.top === lastInsets.top) return;
-  lastInsets = { left: rect.left, top: rect.top };
+let insetsTimer = null;
+let settleTimer = null;
+
+function sendInsets(left, top) {
+  if (left === lastInsets.left && top === lastInsets.top) return;
+  lastInsets = { left, top };
   act('ui.insets', lastInsets);
 }
-new ResizeObserver(reportInsets).observe(page);
+
+function wantedInsets() {
+  const sidebarWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-w')) || 264;
+  return {
+    left: body.classList.contains('sidebar-open') ? sidebarWidth : 0,
+    top: $('toolbar').offsetHeight + $('tabbar').offsetHeight
+      + (body.classList.contains('favbar-open') ? FAVBAR_H : 0)
+      + (body.classList.contains('finding') ? FINDBAR_H : FINDBAR_CLOSED_H),
+  };
+}
+
+function reportInsets() {
+  const want = wantedInsets();
+  clearTimeout(insetsTimer);
+  const shrinking = lastInsets.left < 0 || want.left > lastInsets.left || want.top > lastInsets.top;
+  if (shrinking) sendInsets(want.left, want.top);
+  else insetsTimer = setTimeout(() => sendInsets(want.left, want.top), INSET_ANIMATION_MS);
+  // Whatever was predicted, finish by matching what is really on screen.
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    const rect = page.getBoundingClientRect();
+    sendInsets(rect.left, rect.top);
+  }, INSET_ANIMATION_MS + 150);
+}
 
 // ---------- Tabs ----------
 
@@ -247,8 +278,12 @@ function renderAddress() {
 
   const loading = !!(tab && tab.loading);
   const reload = $('reload');
-  reload.innerHTML = loading ? ICONS.close : ICONS.reload;
-  reload.title = loading ? 'Stop' : 'Reload';
+  const mode = loading ? 'stop' : 'reload';
+  if (reload.dataset.mode !== mode) {
+    reload.dataset.mode = mode;
+    reload.innerHTML = loading ? ICONS.close : ICONS.reload;
+    reload.title = loading ? 'Stop' : 'Reload';
+  }
   reload.hidden = !url;
 
   if (state.activeId !== lastActiveId) {
@@ -328,7 +363,7 @@ function updateSuggest() {
   const items = [
     looksLikeURL(text)
       ? { kind: 'go', title: text, sub: 'Open website', value: text }
-      : { kind: 'search', title: text, sub: 'Search DuckDuckGo', value: text },
+      : { kind: 'search', title: text, sub: 'Search Google', value: text },
   ];
   const seen = new Set();
   const pool = [...lib.bookmarks, ...lib.history];
@@ -390,14 +425,21 @@ function setPane(name) {
     section.classList.toggle('active', section.dataset.pane === name);
     section.classList.toggle('behind', section.dataset.pane === 'root' && name !== 'root');
   }
+  flushLibrary(); // draws the list that just became visible
 }
 
 for (const button of document.querySelectorAll('[data-open]')) {
   button.addEventListener('click', () => setPane(button.dataset.open));
 }
 
+let groupsSig = '';
+
 function renderGroups() {
   if (renaming) return;
+  // Titles and icons change constantly while pages load; the group list rarely does.
+  const sig = JSON.stringify([state.groups, state.activeGroupId]);
+  if (sig === groupsSig) return;
+  groupsSig = sig;
   const list = $('groups');
   list.textContent = '';
   for (const group of state.groups) {
@@ -448,6 +490,7 @@ function startRename(row, current, commit) {
     renaming = false;
     const value = input.value.trim();
     if (save && value && value !== current) commit(value);
+    groupsSig = '';
     renderGroups();
     renderLibrary();
   };
@@ -488,9 +531,26 @@ function dayLabel(ts) {
   return day.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-function renderLibrary() {
-  if (renaming) return;
+// The library (bookmarks, reading list, history) is large, and rebuilding every list on every
+// page load made navigation stutter. So each part is drawn only while it is on screen, and
+// drawn again when it next becomes visible if the data changed in the meantime.
+const dirty = { bookmarks: true, reading: true, history: true, favs: true, start: true };
 
+function renderLibrary() {
+  for (const key of Object.keys(dirty)) dirty[key] = true;
+  flushLibrary();
+}
+
+function flushLibrary() {
+  if (renaming) return;
+  if (dirty.favs && state && state.settings.favBar) { dirty.favs = false; drawFavs(); }
+  if (dirty.start && body.classList.contains('start')) { dirty.start = false; renderStart(); }
+  if (dirty.bookmarks && pane === 'bookmarks') { dirty.bookmarks = false; drawBookmarks(); }
+  if (dirty.reading && pane === 'reading') { dirty.reading = false; drawReading(); }
+  if (dirty.history && pane === 'history') { dirty.history = false; drawHistory(); }
+}
+
+function drawBookmarks() {
   const bookmarksEl = $('bookmarks');
   bookmarksEl.textContent = '';
   const favorites = lib.bookmarks.filter((b) => b.favorite);
@@ -507,7 +567,9 @@ function renderLibrary() {
   addSection('Favorites', favorites);
   addSection('Bookmarks', others);
   if (!lib.bookmarks.length) bookmarksEl.append(emptyNote('No bookmarks yet. Press ⌘D on a page to add one.'));
+}
 
+function drawReading() {
   const readingEl = $('reading');
   readingEl.textContent = '';
   for (const item of lib.readingList) {
@@ -517,7 +579,9 @@ function renderLibrary() {
     readingEl.append(row);
   }
   if (!lib.readingList.length) readingEl.append(emptyNote('Pages you save to read later appear here.'));
+}
 
+function drawHistory() {
   const historyEl = $('history');
   historyEl.textContent = '';
   let label = null;
@@ -528,18 +592,18 @@ function renderLibrary() {
   }
   if (!lib.history.length) historyEl.append(emptyNote('Pages you visit appear here.'));
   $('clear-history').hidden = !lib.history.length;
+}
 
+function drawFavs() {
   const favs = $('favs');
   favs.textContent = '';
-  for (const bookmark of favorites) {
+  for (const bookmark of lib.bookmarks.filter((b) => b.favorite)) {
     const button = el('button', 'fav', bookmark.title);
     button.title = bookmark.url;
     button.addEventListener('click', (event) => act('nav.open', bookmark.url, event.metaKey || event.ctrlKey));
     button.addEventListener('contextmenu', (event) => { event.preventDefault(); act('bookmark.menu', bookmark.id); });
     favs.append(button);
   }
-
-  renderStart();
 }
 
 // ---------- Start page ----------
@@ -596,11 +660,11 @@ function revealStart(replay) {
   }
   items.forEach((node, index) => {
     if (node.classList.contains('in')) return;
-    const delay = Math.min(index * 38, 620);
+    const delay = Math.min(index * 24, 360);
     node.style.transitionDelay = delay + 'ms';
     node.classList.add('in');
     // Drop the stagger once it has played, so hover effects respond at once.
-    setTimeout(() => { node.style.transitionDelay = ''; }, delay + 1000);
+    setTimeout(() => { node.style.transitionDelay = ''; }, delay + 700);
   });
 }
 
@@ -678,6 +742,7 @@ const findInput = $('find-input');
 function openFind() {
   findOpen = true;
   body.classList.add('finding');
+  reportInsets();
   findInput.focus();
   findInput.select();
   if (findInput.value) act('find.query', findInput.value, true);
@@ -687,6 +752,7 @@ function closeFind() {
   if (!findOpen) return;
   findOpen = false;
   body.classList.remove('finding');
+  reportInsets();
   $('find-count').textContent = '';
   act('find.stop');
 }
@@ -718,6 +784,8 @@ document.addEventListener('keydown', (event) => {
 
 // ---------- Updates from the main process ----------
 
+let lastLayoutKey = '';
+
 function render() {
   const settings = state.settings;
   body.classList.toggle('sidebar-open', !!settings.sidebar);
@@ -731,6 +799,7 @@ function render() {
   const isStart = !tab || !tab.url;
   body.classList.toggle('start', isStart);
   $('page-menu').disabled = isStart;
+  flushLibrary(); // draws the start page / favorites bar if they just became visible
   if (isStart && (wasStart !== true || state.activeId !== lastActiveId)) revealStart(true);
   wasStart = isStart;
 
@@ -742,7 +811,12 @@ function render() {
   renderGroups();
   if (overviewOpen) renderOverview(false);
   lastActiveId = state.activeId;
-  reportInsets();
+  // Measuring forces a layout, so only do it when the sidebar or favorites bar actually changed.
+  const layoutKey = `${!!settings.sidebar}|${!!settings.favBar}`;
+  if (layoutKey !== lastLayoutKey) {
+    lastLayoutKey = layoutKey;
+    reportInsets();
+  }
 }
 
 B.on('state', (next) => {
