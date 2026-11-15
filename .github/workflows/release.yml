@@ -10,7 +10,20 @@ permissions:
   contents: write # needed to create the GitHub Release and upload installers
 
 jobs:
+  # Create the GitHub Release once, up front. Without this the Mac and Windows
+  # jobs each create their own release for the same tag at the same moment,
+  # which leaves two releases with half the installers in each.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "${TAG#v}" --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+
   build:
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +43,8 @@ jobs:
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Upload to the release created above even when re-running an old build.
+          EP_GH_IGNORE_TIME: true
           # No Apple certificate yet, so don't search the keychain for one. The app is
           # still ad-hoc signed (mac.identity "-" in package.json): an unsigned bundle
           # shows up as "damaged" on Apple Silicon once it has been downloaded.
