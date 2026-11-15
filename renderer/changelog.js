@@ -3,6 +3,12 @@
 // ICONS in renderer.js.
 window.CHANGELOG = [
   {
+    version: '0.5.1',
+    items: [
+      { icon: 'tabs', title: 'Smooth tab dragging', text: 'Drag a tab and it lifts off the bar while the others glide out of the way. Let go and it springs into place. Drop it on a group to move it there, or press Escape to put it back.' },
+    ],
+  },
+  {
     version: '0.5.0',
     items: [
       { icon: 'sparkle', title: 'Liquid Glass design', text: 'Frosted, softly lit surfaces and springy motion across the app. Settings, the palette and other sheets glass over a blurred view of your page. Prefer it lighter? Settings > General > Glass effects > Reduced.' },

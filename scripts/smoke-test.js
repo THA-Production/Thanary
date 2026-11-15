@@ -62,6 +62,16 @@ function run(port) {
     r.unknown = await ask(wc, 'midi', 'https://example.com/');
     return JSON.stringify(r);
   })()`;
+  // Simulates a mouse drag on the tab strip: press on a tab, move in small steps, release.
+  const dragHelper = `window.__drag = {
+    nodes: () => [...document.querySelectorAll('#tabs .tab')],
+    fire: (type, x, y) => window.dispatchEvent(new PointerEvent(type, { clientX: x, clientY: y, button: 0, bubbles: true, pointerId: 1, pointerType: 'mouse' })),
+    start(i) { const n = this.nodes()[i]; const r = n.getBoundingClientRect(); this.sx = r.left + r.width / 2; this.sy = r.top + 15; n.dispatchEvent(new PointerEvent('pointerdown', { clientX: this.sx, clientY: this.sy, button: 0, bubbles: true, pointerId: 1, pointerType: 'mouse' })); },
+    async moveTo(x, y) { const fx = this.cx ?? this.sx, fy = this.cy ?? this.sy; for (let k = 1; k <= 12; k++) { this.fire('pointermove', fx + (x - fx) * k / 12, fy + (y - fy) * k / 12); await new Promise((r) => setTimeout(r, 16)); } this.cx = x; this.cy = y; },
+    up() { this.fire('pointerup', this.cx, this.cy); this.cx = this.cy = undefined; }
+  }; "ready"`;
+  const dragFirstToLast = `(async () => { const d = window.__drag; d.start(0); const last = d.nodes()[d.nodes().length - 1].getBoundingClientRect(); await d.moveTo(last.left + last.width / 2 + 6, d.sy + 4); const n = d.nodes(); const mid = { lifted: n[0].classList.contains('lifted'), slid: n[1].style.transform !== '' }; d.up(); await new Promise((r) => setTimeout(r, 1100)); return JSON.stringify(mid); })()`;
+  const defaultOrder = 'JSON.stringify(tabs.filter((t) => t.groupId === "default").map((t) => t.url.split("?n=")[1] || "1"))';
   const crash = `(async () => { activeWC().forcefullyCrashRenderer(); return 'crashed'; })()`;
   const where = `JSON.stringify({ url: activeWC().getURL(), tabUrl: activeTab().url, failed: activeTab().failedUrl || null })`;
 
@@ -81,6 +91,16 @@ function run(port) {
     { name: 'pinned tabs stay first', step: ['main', tabsOrder], expect: (v) => v.length === 2 && v[0] === true && v[1] === false },
     { name: 'the pinned tab shows as a compact tab', step: ['js', 'document.querySelectorAll(".tab.pinned").length'], expect: (v) => v === 1 },
     { name: 'a pinned tab can be unpinned', step: ['main', '(setPinned(tabs.find((t) => t.pinned).id, false), tabs.filter((t) => t.pinned).length)'], expect: (v) => v === 0 },
+
+    // dragging tabs: lift, slide aside, settle into the new order
+    { step: ['act', 'nav.go', `${base}/page?n=2`] }, { step: ['wait', 1800] },
+    { step: ['act', 'tab.new'] }, { step: ['wait', 500] },
+    { step: ['act', 'nav.go', `${base}/page?n=3`] }, { step: ['wait', 1800] },
+    { step: ['js', dragHelper] },
+    { name: 'three tabs are open in order', step: ['main', defaultOrder], expect: (v) => v.join(',') === '1,2,3' },
+    { name: 'dragging a tab lifts it and slides the others aside', step: ['js', dragFirstToLast], expect: (v) => v.lifted === true && v.slid === true },
+    { name: 'releasing the tab puts it in its new position', step: ['main', defaultOrder], expect: (v) => v.join(',') === '2,3,1' },
+    { name: 'no leftover drag styling after the drop', step: ['js', 'JSON.stringify({ stuck: window.__drag.nodes().filter((n) => n.style.transform || n.classList.contains("lifted") || n.classList.contains("settling")).length, dragging: document.body.classList.contains("dragging-tab") })'], expect: (v) => v.stuck === 0 && v.dragging === false },
 
     { step: ['act', 'nav.go', 'http://127.0.0.1:1/'] }, { step: ['wait', 3000] },
     { name: 'a refused connection shows the error page', step: ['main', where], expect: (v) => /error\.html/.test(v.url) && v.failed === 'http://127.0.0.1:1/' && v.tabUrl === 'http://127.0.0.1:1/' },

@@ -210,7 +210,6 @@ let firstTabRender = true;
 function makeTabEl(id) {
   const tab = el('div', 'tab');
   tab.setAttribute('role', 'tab');
-  tab.draggable = true;
   const close = el('button', 'tab-close');
   close.innerHTML = ICONS.close;
   close.title = 'Close Tab';
@@ -219,7 +218,9 @@ function makeTabEl(id) {
   inner.append(el('span', 'tab-icon'), el('span', 'tab-title'));
   tab.append(close, inner);
 
+  tab.addEventListener('pointerdown', (event) => startTabDrag(event, id, tab));
   tab.addEventListener('click', (event) => {
+    if (suppressClick) return; // this click is the end of a drag
     if (event.target.closest('.tab-close')) act('tab.close', id);
     else act('tab.switch', id);
   });
@@ -229,35 +230,174 @@ function makeTabEl(id) {
   });
   tab.addEventListener('contextmenu', (event) => { event.preventDefault(); act('tab.menu', id); });
 
-  tab.addEventListener('dragstart', (event) => {
-    event.dataTransfer.setData('text/x-thanary-tab', String(id));
-    event.dataTransfer.effectAllowed = 'move';
-    tab.classList.add('dragging');
-  });
-  tab.addEventListener('dragend', () => { tab.classList.remove('dragging'); clearDropMarks(); });
-  tab.addEventListener('dragover', (event) => {
-    if (!event.dataTransfer.types.includes('text/x-thanary-tab')) return;
-    event.preventDefault();
-    const rect = tab.getBoundingClientRect();
-    clearDropMarks();
-    tab.classList.add(event.clientX < rect.left + rect.width / 2 ? 'drop-before' : 'drop-after');
-  });
-  tab.addEventListener('drop', (event) => {
-    const dragged = Number(event.dataTransfer.getData('text/x-thanary-tab'));
-    if (!dragged) return;
-    event.preventDefault();
-    const before = tab.classList.contains('drop-before');
-    clearDropMarks();
-    const order = state.tabs.map((t) => t.id);
-    const index = order.indexOf(id);
-    const beforeId = before ? id : order[index + 1] ?? null;
-    if (dragged !== beforeId) act('tab.move', dragged, beforeId);
-  });
   return tab;
 }
 
-function clearDropMarks() {
-  for (const node of tabsEl.querySelectorAll('.drop-before, .drop-after')) node.classList.remove('drop-before', 'drop-after');
+// ---------- Tab dragging: lift, slide aside, settle ----------
+// The tab you drag lifts off the bar and follows the pointer, the others slide out of its way, and
+// on release it springs into its new slot. Only transforms change while dragging, so it stays smooth.
+const DRAG_START_PX = 5;
+let drag = null;
+let suppressClick = false;
+
+function removeDragListeners() {
+  window.removeEventListener('pointermove', onTabDragMove);
+  window.removeEventListener('pointerup', onTabDragEnd);
+  window.removeEventListener('pointercancel', cancelTabDrag);
+  window.removeEventListener('blur', cancelTabDrag);
+}
+
+function startTabDrag(event, id, node) {
+  if (drag || event.button !== 0 || event.target.closest('.tab-close')) return;
+  const nodes = [...tabsEl.querySelectorAll('.tab:not(.leaving)')];
+  const ids = state.tabs.map((t) => t.id);
+  const index = nodes.indexOf(node);
+  if (index === -1 || ids.length !== nodes.length || ids[index] !== id) return; // the strip is mid-update
+  drag = {
+    id, node, nodes, ids, index, target: index, active: false, settling: false, chip: null,
+    startX: event.clientX, startY: event.clientY,
+    rects: nodes.map((n) => n.getBoundingClientRect()),
+    pinnedCount: state.tabs.filter((t) => t.pinned).length,
+    pinned: !!state.tabs[index].pinned,
+  };
+  window.addEventListener('pointermove', onTabDragMove);
+  window.addEventListener('pointerup', onTabDragEnd);
+  window.addEventListener('pointercancel', cancelTabDrag);
+  window.addEventListener('blur', cancelTabDrag);
+}
+
+function onTabDragMove(event) {
+  if (!drag || drag.settling) return;
+  if (!tabsEl.contains(drag.node)) { clearDrag(); return; }
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  if (!drag.active) {
+    if (Math.hypot(dx, dy) < DRAG_START_PX) return;
+    drag.active = true;
+    body.classList.add('dragging-tab');
+    drag.node.classList.add('lifted');
+    for (const n of drag.nodes) if (n !== drag.node) n.classList.add('shifting');
+  }
+
+  // follow the pointer, with a little resistance past either end of the bar
+  const rect = drag.rects[drag.index];
+  const bar = tabsEl.getBoundingClientRect();
+  const minX = bar.left - rect.left;
+  const maxX = bar.right - rect.right;
+  const x = dx < minX ? minX + (dx - minX) * 0.25 : dx > maxX ? maxX + (dx - maxX) * 0.25 : dx;
+  const y = Math.max(-6, Math.min(6, dy * 0.3));
+
+  // over a group chip? Dropping there moves the tab to that group.
+  const under = document.elementFromPoint(event.clientX, event.clientY);
+  const chip = under && under.closest ? under.closest('.chip:not(.add)') : null;
+  const overChip = chip && chip.dataset.id !== state.activeGroupId ? chip : null;
+  if (overChip !== drag.chip) {
+    if (drag.chip) drag.chip.classList.remove('drop');
+    if (overChip) overChip.classList.add('drop');
+    drag.chip = overChip;
+  }
+  drag.node.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${overChip ? 0.82 : 1.05})`;
+  drag.node.style.opacity = overChip ? '0.8' : '';
+
+  // which slot is the tab over? (pinned tabs only move among pinned slots, and the rest likewise)
+  const center = rect.left + rect.width / 2 + dx;
+  const lo = drag.pinned ? 0 : drag.pinnedCount;
+  const hi = drag.pinned ? Math.max(0, drag.pinnedCount - 1) : drag.nodes.length - 1;
+  let target = drag.index;
+  if (!overChip) {
+    let best = Infinity;
+    for (let i = lo; i <= hi; i++) {
+      const distance = Math.abs(center - (drag.rects[i].left + drag.rects[i].width / 2));
+      if (distance < best) { best = distance; target = i; }
+    }
+  }
+  drag.target = target;
+
+  // the tabs it has passed slide over by one tab width
+  const gap = drag.rects.length > 1 ? Math.max(0, drag.rects[1].left - drag.rects[0].right) : 4;
+  const shiftBy = rect.width + gap;
+  drag.nodes.forEach((n, i) => {
+    if (n === drag.node) return;
+    let shift = 0;
+    if (target > drag.index && i > drag.index && i <= target) shift = -shiftBy;
+    else if (target < drag.index && i >= target && i < drag.index) shift = shiftBy;
+    n.style.transform = shift ? `translate3d(${shift}px, 0, 0)` : '';
+  });
+}
+
+function onTabDragEnd() {
+  if (!drag) return;
+  removeDragListeners();
+  if (!drag.active) { drag = null; return; } // it was just a click
+  const d = drag;
+  d.settling = true;
+  suppressClick = true;
+  setTimeout(() => { suppressClick = false; }, 80);
+  body.classList.remove('dragging-tab');
+
+  if (d.chip) {
+    // into a group: shrink away while the main process moves the tab
+    const groupId = d.chip.dataset.id;
+    d.chip.classList.remove('drop');
+    d.node.classList.remove('lifted');
+    d.node.classList.add('settling');
+    d.node.style.opacity = '0';
+    d.node.style.transform += ' scale(0.5)';
+    act('tab.toGroup', d.id, groupId);
+    setTimeout(() => { if (drag === d) clearDrag(); }, 700);
+    return;
+  }
+
+  // spring into the slot it ended over
+  d.node.classList.remove('lifted');
+  d.node.classList.add('settling');
+  d.node.style.opacity = '';
+  d.node.style.transform = `translate3d(${d.rects[d.target].left - d.rects[d.index].left}px, 0, 0) scale(1)`;
+  if (d.target === d.index) {
+    setTimeout(() => { if (drag === d) clearDrag(); }, 520);
+    return;
+  }
+  setTimeout(() => {
+    if (drag !== d) return;
+    const order = d.ids.filter((x) => x !== d.id);
+    order.splice(d.target, 0, d.id);
+    act('tab.move', d.id, order[d.target + 1] ?? null); // the new order arrives as a state update, which clears the drag
+    setTimeout(() => { if (drag === d) clearDrag(); }, 500);
+  }, 330);
+}
+
+// Escape (or the pointer being lost): everything springs back where it was.
+function cancelTabDrag() {
+  if (!drag) return;
+  removeDragListeners();
+  const d = drag;
+  if (!d.active) { drag = null; return; }
+  d.settling = true;
+  body.classList.remove('dragging-tab');
+  if (d.chip) d.chip.classList.remove('drop');
+  for (const n of d.nodes) {
+    n.classList.remove('lifted');
+    n.classList.add('settling');
+    n.style.transform = '';
+    n.style.opacity = '';
+  }
+  setTimeout(() => { if (drag === d) clearDrag(); }, 520);
+}
+
+function clearDrag() {
+  if (!drag) return;
+  removeDragListeners();
+  for (const n of drag.nodes) {
+    n.style.transition = 'none';
+    n.style.transform = '';
+    n.style.opacity = '';
+    n.classList.remove('lifted', 'shifting', 'settling');
+  }
+  body.classList.remove('dragging-tab');
+  if (drag.chip) drag.chip.classList.remove('drop');
+  void tabsEl.offsetWidth; // apply the reset without animating it
+  for (const n of drag.nodes) n.style.transition = '';
+  drag = null;
 }
 
 function updateTabEl(node, tab) {
@@ -1043,7 +1183,8 @@ $('clear-history').addEventListener('click', () => act('history.clear'));
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (modal) closeModal();
+  if (drag && drag.active) cancelTabDrag();
+  else if (modal) closeModal();
   else if (overviewOpen) closeOverview();
 });
 
@@ -1838,6 +1979,7 @@ function render() {
   if (isStart && findOpen) closeFind();
 
   renderTabs();
+  if (drag && drag.settling) clearDrag(); // the real order is on screen now
   renderAddress();
   renderGroups();
   renderAdblock();
