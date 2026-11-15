@@ -1,4 +1,4 @@
-# Nova Browser
+# Thanary
 
 A simple desktop web browser for macOS and Windows, built on Electron (Chromium).
 Updates are delivered through GitHub Releases.

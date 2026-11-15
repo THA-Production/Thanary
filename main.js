@@ -203,7 +203,7 @@ function setupAutoUpdate() {
   autoUpdater.on('update-not-available', () => {
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
-      dialog.showMessageBox({ type: 'info', message: 'You are up to date.', detail: `Nova Browser ${app.getVersion()} is the latest version.` });
+      dialog.showMessageBox({ type: 'info', message: 'You are up to date.', detail: `Thanary ${app.getVersion()} is the latest version.` });
     }
   });
   autoUpdater.on('update-downloaded', (info) => {
@@ -211,7 +211,7 @@ function setupAutoUpdate() {
     dialog
       .showMessageBox({
         type: 'info',
-        message: `Nova Browser ${info.version} is ready to install.`,
+        message: `Thanary ${info.version} is ready to install.`,
         detail: 'Restart now to update, or it will install the next time you quit.',
         buttons: ['Restart now', 'Later'],
         defaultId: 0,
@@ -290,6 +290,11 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(allowed.has(permission));
   });
+
+  // Installed builds get their icon from the app bundle; this is for `npm start`.
+  if (process.platform === 'darwin' && !app.isPackaged) {
+    app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
+  }
 
   buildMenu();
   createWindow();
