@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const CHANNELS = ['state', 'library', 'cmd'];
+const CHANNELS = ['state', 'library', 'cmd', 'update', 'adblock', 'ai'];
 
 // The only things the chrome page can do: ask the main process for a named
 // action (main.js checks the name against its own list) and listen for updates.

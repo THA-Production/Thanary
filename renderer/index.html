@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src https: http: data:">
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' https: http: data:">
   <title>Thanary</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -14,9 +14,6 @@
       <div class="sb-head drag"></div>
       <div id="panes">
         <section class="pane" data-pane="root">
-          <h2 class="sb-label">Tab Groups</h2>
-          <div id="groups" class="rows"></div>
-          <button id="new-group" class="row ghost"><i data-icon="plus"></i><span>New Tab Group</span></button>
           <h2 class="sb-label">Collections</h2>
           <div class="rows">
             <button class="row nav" data-open="bookmarks"><i data-icon="book"></i><span>Bookmarks</span><i class="chev" data-icon="chevR"></i></button>
@@ -43,6 +40,9 @@
           <div id="history" class="pane-body"></div>
         </section>
       </div>
+      <footer class="sb-foot">
+        <button id="open-settings" class="row"><i data-icon="gear"></i><span class="name">Settings</span></button>
+      </footer>
     </aside>
 
     <main id="main">
@@ -64,6 +64,8 @@
         </div>
 
         <div class="tb-side right">
+          <button id="shield" class="tb" title="Ad blocker" aria-label="Ad blocker"><i data-icon="shield"></i></button>
+          <button id="ai-btn" class="tb" title="Ask AI (⇧⌘A)" aria-label="Ask AI"><i data-icon="sparkle"></i></button>
           <button id="page-menu" class="tb" title="Bookmark or share this page" aria-label="Bookmark or share this page"><i data-icon="share"></i></button>
           <button id="new-tab" class="tb" title="New Tab" aria-label="New Tab"><i data-icon="plus"></i></button>
           <button id="overview-btn" class="tb" title="Tab Overview" aria-label="Tab Overview"><i data-icon="grid"></i></button>
@@ -71,7 +73,10 @@
       </header>
 
       <nav id="favbar" aria-label="Favorites"><div id="favs"></div></nav>
-      <div id="tabbar"><div id="tabs" role="tablist"></div></div>
+      <div id="tabbar">
+        <div id="groupbar" aria-label="Tab groups"></div>
+        <div id="tabs" role="tablist"></div>
+      </div>
 
       <div id="findbar">
         <i data-icon="search"></i>
@@ -85,8 +90,18 @@
       <div id="page">
         <div id="start">
           <div class="start-inner">
-            <h1 id="greeting" class="reveal"></h1>
-            <p id="subgreeting" class="reveal"></p>
+            <div class="start-hero reveal">
+              <img class="start-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+              <div>
+                <h1 id="greeting"></h1>
+                <p id="subgreeting"></p>
+              </div>
+            </div>
+            <button id="start-search" class="start-search reveal"><i data-icon="search"></i><span id="start-search-text"></span></button>
+            <section class="start-section" id="sec-work">
+              <h3 class="reveal">THA Production</h3>
+              <div class="tiles" id="start-work"></div>
+            </section>
             <section class="start-section" id="sec-favorites">
               <h3 class="reveal">Favorites</h3>
               <div class="tiles" id="start-favs"></div>
@@ -110,7 +125,170 @@
     </main>
 
     <div id="suggest" role="listbox"></div>
+
+    <div id="modal">
+      <!-- ============ Settings ============ -->
+      <section id="settings" class="sheet" role="dialog" aria-label="Settings">
+        <header class="sheet-head">
+          <h2>Settings</h2>
+          <button class="tb" data-close aria-label="Close"><i data-icon="close"></i></button>
+        </header>
+        <div class="sheet-body">
+          <nav class="set-nav">
+            <button data-spane="general"><i data-icon="gear"></i><span>General</span></button>
+            <button data-spane="start"><i data-icon="home"></i><span>Start Page</span></button>
+            <button data-spane="privacy"><i data-icon="shield"></i><span>Privacy</span></button>
+            <button data-spane="ai"><i data-icon="sparkle"></i><span>AI Assistant</span></button>
+            <button data-spane="updates"><i data-icon="refresh"></i><span>Updates</span></button>
+          </nav>
+
+          <div class="set-panes">
+            <div class="set-pane" data-spane="general">
+              <h3>General</h3>
+              <div class="set-row">
+                <div class="set-text"><strong>Search engine</strong><span>Used when you type a search in the address bar.</span></div>
+                <select id="set-engine">
+                  <option value="google">Google</option>
+                  <option value="duckduckgo">DuckDuckGo</option>
+                  <option value="bing">Bing</option>
+                  <option value="brave">Brave Search</option>
+                </select>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Show sidebar</strong><span>Bookmarks, reading list and history. ⇧⌘L</span></div>
+                <label class="switch"><input type="checkbox" id="set-sidebar"><span></span></label>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Show favorites bar</strong><span>Your favorite bookmarks under the toolbar. ⇧⌘B</span></div>
+                <label class="switch"><input type="checkbox" id="set-favbar"><span></span></label>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Developer tools</strong><span>Web Inspector ⌥⌘I · JavaScript Console ⌥⌘C · View Page Source ⌥⌘U (Develop menu).</span></div>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Tab groups</strong><span>Groups sit left of your tabs. Double-click a group to rename it, right-click for more. Private groups: ⇧⌘N.</span></div>
+              </div>
+            </div>
+
+            <div class="set-pane" data-spane="start">
+              <h3>Start Page</h3>
+              <div class="set-row">
+                <div class="set-text"><strong>Your name</strong><span>Shown in the greeting on the start page.</span></div>
+                <input id="set-name" type="text" maxlength="40" placeholder="Name" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="set-block">
+                <div class="set-text"><strong>THA Production links</strong><span>Websites, dashboards and admin pages shown on the start page.</span></div>
+                <div id="links-list"></div>
+                <button id="add-link" class="btn">Add Link</button>
+              </div>
+            </div>
+
+            <div class="set-pane" data-spane="privacy">
+              <h3>Privacy</h3>
+              <div class="set-row">
+                <div class="set-text"><strong>Block ads and trackers</strong><span id="adblock-status">Loading filter lists…</span></div>
+                <label class="switch"><input type="checkbox" id="set-adblock"><span></span></label>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Browsing history</strong><span>Remove every page from History and Frequently Visited.</span></div>
+                <button id="set-clear-history" class="btn">Clear History…</button>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Cookies and website data</strong><span>Signs you out of websites. History is kept.</span></div>
+                <button id="set-clear-data" class="btn">Clear Data…</button>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Private tab groups</strong><span>Pages open without saving history, cookies or logins, and everything is erased when the group is closed.</span></div>
+                <button id="set-new-private" class="btn">New Private Group</button>
+              </div>
+            </div>
+
+            <div class="set-pane" data-spane="ai">
+              <h3>AI Assistant</h3>
+              <p class="set-note">Ask questions or summarize the page you are on, using GitHub Models. It needs your own GitHub token with the <em>Models: read</em> permission. The token is kept encrypted on this Mac and only sent to GitHub.</p>
+              <div class="set-row">
+                <div class="set-text"><strong>GitHub token</strong><span id="ai-token-status">No token saved.</span></div>
+                <div class="inline">
+                  <input id="ai-token" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+                  <button id="ai-token-save" class="btn">Save</button>
+                  <button id="ai-token-remove" class="btn" hidden>Remove</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Model</strong><span>For example openai/gpt-4.1-mini or openai/gpt-4.1.</span></div>
+                <input id="set-model" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Need a token?</strong><span>Create one on GitHub, then paste it above.</span></div>
+                <button id="ai-token-create" class="btn">Create Token…</button>
+              </div>
+            </div>
+
+            <div class="set-pane" data-spane="updates">
+              <h3>Updates</h3>
+              <div class="about">
+                <img class="about-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+                <div>
+                  <strong>Thanary</strong>
+                  <span id="about-version"></span>
+                  <span id="about-engine" class="dim"></span>
+                </div>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong id="update-line">Not checked yet.</strong><span id="update-sub"></span></div>
+                <div class="inline">
+                  <button id="update-restart" class="btn primary" hidden>Restart to Update</button>
+                  <button id="update-download" class="btn" hidden>Open Download Page</button>
+                  <button id="update-check" class="btn">Check for Updates</button>
+                </div>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Update automatically</strong><span>Checks for new versions in the background.</span></div>
+                <label class="switch"><input type="checkbox" id="set-autoupdate"><span></span></label>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>What’s new</strong><span>See what changed in this version.</span></div>
+                <button id="open-whatsnew" class="btn">Show What’s New</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ Ask AI ============ -->
+      <section id="ai" class="sheet" role="dialog" aria-label="Ask AI">
+        <header class="sheet-head">
+          <h2><i data-icon="sparkle"></i>Ask AI</h2>
+          <div class="inline">
+            <button id="ai-clear" class="text-btn">New Chat</button>
+            <button class="tb" data-close aria-label="Close"><i data-icon="close"></i></button>
+          </div>
+        </header>
+        <div id="ai-log" class="ai-log"></div>
+        <div class="ai-compose">
+          <textarea id="ai-input" rows="2" placeholder="Ask anything, or “Summarize this page”"></textarea>
+          <div class="ai-actions">
+            <label class="check"><input type="checkbox" id="ai-include" checked><span>Include this page</span></label>
+            <button id="ai-send" class="btn primary">Ask</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ What's New ============ -->
+      <section id="whatsnew" class="sheet" role="dialog" aria-label="What’s new">
+        <div class="wn-hero">
+          <img class="wn-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+          <h2 id="wn-title"></h2>
+          <span id="wn-version" class="badge"></span>
+        </div>
+        <div id="wn-list" class="wn-list"></div>
+        <footer class="wn-foot">
+          <button id="wn-done" class="btn primary big">Continue</button>
+        </footer>
+      </section>
+    </div>
   </div>
+  <script src="changelog.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

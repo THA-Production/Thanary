@@ -4,20 +4,17 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
+// The THA Production logo (white lettering with a soft glow on black) on a macOS-style
+// rounded square with the usual transparent margin.
+const logo = fs.readFileSync(path.join(__dirname, '..', 'build', 'source', 'tha-logo-glow.png')).toString('base64');
+
 const SVG = `
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#6d5dfc"/>
-      <stop offset="1" stop-color="#19b5fe"/>
-    </linearGradient>
+    <clipPath id="squircle"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
   </defs>
-  <!-- macOS-style rounded square with the usual transparent margin -->
-  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
-  <!-- globe ring -->
-  <circle cx="512" cy="512" r="290" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="26"/>
-  <!-- bold T -->
-  <path d="M312 342 H712 V430 H556 V706 H468 V430 H312 Z" fill="#ffffff"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000"/>
+  <image x="100" y="100" width="824" height="824" clip-path="url(#squircle)" xlink:href="data:image/png;base64,${logo}"/>
 </svg>`;
 
 app.whenReady().then(async () => {

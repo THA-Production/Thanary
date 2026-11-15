@@ -25,6 +25,12 @@ const ICONS = {
   clock: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
   tabs: svg('<rect x="3.5" y="5.5" width="17" height="13" rx="3"/><path d="M3.5 10h17"/>'),
   globe: svg('<circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="3.8" ry="8.5"/><path d="M3.5 12h17"/>'),
+  gear: svg('<circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M18 6l-1.6 1.6M7.6 16.4 6 18"/>'),
+  home: svg('<path d="M4.5 11 12 4.5 19.5 11v8a1 1 0 0 1-1 1h-4v-5.5h-5V20h-4a1 1 0 0 1-1-1z"/>'),
+  shield: svg('<path d="M12 3.5 5 6v5.5c0 4.2 2.9 7.3 7 9 4.1-1.7 7-4.8 7-9V6l-7-2.5z"/><path d="m9 12 2.3 2.3L15.5 10"/>'),
+  sparkle: svg('<path d="M11 4.5 12.8 9.2 17.5 11l-4.7 1.8L11 17.5l-1.8-4.7L4.5 11l4.7-1.8L11 4.5z"/><path d="M18.5 15.5v4M16.5 17.5h4"/>'),
+  refresh: svg('<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19.5 4v4.5H15"/>'),
+  bolt: svg('<path d="M13 3.5 6 13h5l-1 7.5L18 11h-5.2L13 3.5z"/>'),
 };
 
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICONS[el.dataset.icon] || '';
@@ -62,6 +68,15 @@ function hueOf(text) {
 function siteIcon(favicon, url, className) {
   const wrap = el('span', 'site-icon ' + (className || ''));
   const host = hostOf(url);
+  if (!favicon && /(^|\.)tha-production\.com$/.test(host)) {
+    const logo = el('img');
+    logo.alt = '';
+    logo.draggable = false;
+    logo.src = 'assets/tha-logo.png';
+    wrap.classList.add('brand');
+    wrap.append(logo);
+    return wrap;
+  }
   const letter = () => {
     wrap.textContent = (host[0] || '?').toUpperCase();
     wrap.classList.add('letter');
@@ -94,6 +109,8 @@ let overlaySent = false;
 let lastActiveId = null;
 let wasLoading = false;
 let wasStart = null;
+let modal = null; // which sheet is open: settings | ai | whatsnew
+let lastStartSig = '';
 
 const body = document.body;
 body.classList.add(B.platform === 'darwin' ? 'mac' : 'win');
@@ -108,7 +125,7 @@ const page = $('page');
 const activeTab = () => (state ? state.tabs.find((t) => t.id === state.activeId) : null) || null;
 
 function syncOverlay() {
-  const want = overviewOpen || suggestOpen;
+  const want = overviewOpen || suggestOpen || !!modal;
   if (want === overlaySent) return;
   overlaySent = want;
   act('ui.overlay', want);
@@ -363,7 +380,7 @@ function updateSuggest() {
   const items = [
     looksLikeURL(text)
       ? { kind: 'go', title: text, sub: 'Open website', value: text }
-      : { kind: 'search', title: text, sub: 'Search Google', value: text },
+      : { kind: 'search', title: text, sub: `Search ${state ? state.searchName : 'the web'}`, value: text },
   ];
   const seen = new Set();
   const pool = [...lib.bookmarks, ...lib.history];
@@ -434,42 +451,49 @@ for (const button of document.querySelectorAll('[data-open]')) {
 
 let groupsSig = '';
 
+// Tab groups are chips to the left of the tabs, like a tab bar.
 function renderGroups() {
   if (renaming) return;
   // Titles and icons change constantly while pages load; the group list rarely does.
   const sig = JSON.stringify([state.groups, state.activeGroupId]);
   if (sig === groupsSig) return;
   groupsSig = sig;
-  const list = $('groups');
-  list.textContent = '';
+  const bar = $('groupbar');
+  bar.textContent = '';
   for (const group of state.groups) {
-    const isDefault = group.id === 'default';
-    const row = el('button', 'row group');
-    row.dataset.id = group.id;
-    row.classList.toggle('active', group.id === state.activeGroupId);
-    const name = isDefault ? `${group.count} ${group.count === 1 ? 'Tab' : 'Tabs'}` : group.name;
-    row.append(icon(isDefault ? 'tabs' : 'grid'), el('span', 'name', name));
-    if (!isDefault) row.append(el('span', 'count', String(group.count)));
+    const chip = el('button', 'chip');
+    chip.dataset.id = group.id;
+    chip.classList.toggle('active', group.id === state.activeGroupId);
+    chip.classList.toggle('private', !!group.private);
+    chip.title = `${group.name} · ${group.count} ${group.count === 1 ? 'tab' : 'tabs'}`;
+    if (group.private) chip.append(icon('lock', 'chip-icon'));
+    chip.append(el('span', 'name', group.name));
 
-    row.addEventListener('click', () => act('group.switch', group.id));
-    if (!isDefault) {
-      row.addEventListener('contextmenu', (event) => { event.preventDefault(); act('group.menu', group.id); });
-      row.addEventListener('dblclick', () => startRename(row, group.name, (value) => act('group.rename', group.id, value)));
-    }
+    chip.addEventListener('click', () => act('group.switch', group.id));
+    chip.addEventListener('contextmenu', (event) => { event.preventDefault(); act('group.menu', group.id); });
+    chip.addEventListener('dblclick', () => startRename(chip, group.name, (value) => act('group.rename', group.id, value)));
     // Tabs can be dropped on a group to move them there.
-    row.addEventListener('dragover', (event) => {
+    chip.addEventListener('dragover', (event) => {
       if (!event.dataTransfer.types.includes('text/x-thanary-tab')) return;
       event.preventDefault();
-      row.classList.add('drop');
+      chip.classList.add('drop');
     });
-    row.addEventListener('dragleave', () => row.classList.remove('drop'));
-    row.addEventListener('drop', (event) => {
-      row.classList.remove('drop');
+    chip.addEventListener('dragleave', () => chip.classList.remove('drop'));
+    chip.addEventListener('drop', (event) => {
+      chip.classList.remove('drop');
       const dragged = Number(event.dataTransfer.getData('text/x-thanary-tab'));
       if (dragged) { event.preventDefault(); act('tab.toGroup', dragged, group.id); }
     });
-    list.append(row);
+    bar.append(chip);
   }
+  const add = el('button', 'chip add');
+  add.append(icon('plus'));
+  add.title = 'New Tab Group';
+  add.setAttribute('aria-label', 'New Tab Group');
+  add.addEventListener('click', () => act('group.newMenu'));
+  bar.append(add);
+  const active = bar.querySelector('.chip.active');
+  if (active) active.scrollIntoView({ inline: 'nearest', block: 'nearest' });
 }
 
 function startRename(row, current, commit) {
@@ -619,8 +643,17 @@ function tile(entry, onMenu) {
 
 function renderStart() {
   const hour = new Date().getHours();
-  $('greeting').textContent = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const hello = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+  const name = state && state.settings.userName;
+  $('greeting').textContent = name ? `${hello}, ${name}` : 'Hello there';
   $('subgreeting').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  $('start-search-text').textContent = `Search ${state ? state.searchName : 'the web'} or enter a website name`;
+
+  const links = (state && state.settings.workLinks) || [];
+  const workEl = $('start-work');
+  workEl.textContent = '';
+  for (const link of links) workEl.append(tile(link));
+  $('sec-work').hidden = !links.length;
 
   const favorites = lib.bookmarks.filter((b) => b.favorite);
   const favEl = $('start-favs');
@@ -650,6 +683,8 @@ function renderStart() {
 
   if (body.classList.contains('start')) revealStart(false);
 }
+
+$('start-search').addEventListener('click', () => address.focus());
 
 // Fades the start page in, one element after another.
 function revealStart(replay) {
@@ -774,13 +809,309 @@ $('forward').addEventListener('click', () => act('nav.forward'));
 $('page-menu').addEventListener('click', () => act('page.menu'));
 $('new-tab').addEventListener('click', () => { closeOverview(); act('tab.new'); });
 $('overview-btn').addEventListener('click', () => (overviewOpen ? closeOverview() : openOverview()));
-$('new-group').addEventListener('click', () => act('group.new'));
 $('clear-history').addEventListener('click', () => act('history.clear'));
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  if (overviewOpen) closeOverview();
+  if (modal) closeModal();
+  else if (overviewOpen) closeOverview();
 });
+
+// ---------- Modal sheets (Settings, Ask AI, What's New) ----------
+
+const modalEl = $('modal');
+let modalClass = '';
+
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+function openModal(name) {
+  if (modal === name) return;
+  address.blur();
+  closeSuggest();
+  closeOverview();
+  if (modalClass) body.classList.remove(modalClass);
+  modal = name;
+  modalClass = 'modal-' + name;
+  body.classList.add('modal-open', modalClass);
+  syncOverlay();
+}
+
+function closeModal() {
+  if (!modal) return;
+  body.classList.remove('modal-open', modalClass);
+  modal = null;
+  modalClass = '';
+  syncOverlay();
+  act('focus.page');
+}
+
+modalEl.addEventListener('mousedown', (event) => { if (event.target === modalEl) closeModal(); });
+for (const button of modalEl.querySelectorAll('[data-close]')) button.addEventListener('click', closeModal);
+
+// ---------- Settings ----------
+
+let settingsPane = 'general';
+let tokenNote = '';
+let upd = { state: 'idle', version: null, message: '' };
+let adInfo = { enabled: true, state: 'loading', blocked: 0 };
+let linkDraft = null;
+let linksSig = '';
+
+const setEngine = $('set-engine');
+const setName = $('set-name');
+const setModel = $('set-model');
+
+function openSettings(pane) {
+  openModal('settings');
+  setSettingsPane(pane || settingsPane);
+  renderSettings();
+}
+
+function setSettingsPane(name) {
+  if (!document.querySelector(`.set-pane[data-spane="${name}"]`)) name = 'general';
+  settingsPane = name;
+  for (const node of document.querySelectorAll('[data-spane]')) node.classList.toggle('active', node.dataset.spane === name);
+}
+
+for (const button of document.querySelectorAll('.set-nav [data-spane]')) {
+  button.addEventListener('click', () => setSettingsPane(button.dataset.spane));
+}
+
+function renderSettings() {
+  if (!state) return;
+  const s = state.settings;
+  setEngine.value = s.searchEngine;
+  $('set-sidebar').checked = !!s.sidebar;
+  $('set-favbar').checked = !!s.favBar;
+  $('set-adblock').checked = !!s.adblock;
+  $('set-autoupdate').checked = !!s.autoUpdate;
+  if (document.activeElement !== setName) setName.value = s.userName || '';
+  if (document.activeElement !== setModel) setModel.value = s.aiModel || '';
+  $('ai-token-status').textContent = tokenNote || (state.aiTokenSaved ? 'Token saved and encrypted on this Mac.' : 'No token saved.');
+  $('ai-token-remove').hidden = !state.aiTokenSaved;
+  $('about-version').textContent = `Version ${state.version}`;
+  $('about-engine').textContent = `Chromium ${state.versions.chrome} · Electron ${state.versions.electron}`;
+  renderLinksEditor();
+  renderAdblock();
+  renderUpdate();
+}
+
+setEngine.addEventListener('change', () => act('set', 'searchEngine', setEngine.value));
+$('set-sidebar').addEventListener('change', (event) => act('set', 'sidebar', event.target.checked));
+$('set-favbar').addEventListener('change', (event) => act('set', 'favBar', event.target.checked));
+$('set-adblock').addEventListener('change', (event) => act('set', 'adblock', event.target.checked));
+$('set-autoupdate').addEventListener('change', (event) => act('set', 'autoUpdate', event.target.checked));
+setName.addEventListener('input', debounce(() => act('set', 'userName', setName.value), 400));
+setModel.addEventListener('input', debounce(() => act('set', 'aiModel', setModel.value), 400));
+$('set-clear-history').addEventListener('click', () => act('history.clear'));
+$('set-clear-data').addEventListener('click', () => act('privacy.clear'));
+$('set-new-private').addEventListener('click', () => { closeModal(); act('group.newPrivate'); });
+$('open-settings').addEventListener('click', () => openSettings());
+
+// The links shown on the start page. Edits are saved as you type (valid web addresses only).
+const saveLinks = debounce(() => act('work.save', linkDraft.filter((l) => /^https?:\/\//i.test(l.url))), 500);
+
+function renderLinksEditor() {
+  const list = $('links-list');
+  if (list.contains(document.activeElement)) return; // never rebuild while the user is typing
+  const sig = JSON.stringify(state.settings.workLinks);
+  if (linkDraft && sig === linksSig) return;
+  linksSig = sig;
+  linkDraft = state.settings.workLinks.map((l) => ({ ...l }));
+  drawLinks();
+}
+
+function drawLinks() {
+  const list = $('links-list');
+  list.textContent = '';
+  linkDraft.forEach((link, index) => {
+    const row = el('div', 'link-row');
+    const title = el('input');
+    title.type = 'text';
+    title.value = link.title;
+    title.placeholder = 'Name';
+    title.maxLength = 40;
+    title.spellcheck = false;
+    const url = el('input');
+    url.type = 'text';
+    url.value = link.url;
+    url.placeholder = 'https://…';
+    url.spellcheck = false;
+    const remove = el('button', 'tb small');
+    remove.innerHTML = ICONS.close;
+    remove.title = 'Remove link';
+    title.addEventListener('input', () => { link.title = title.value; saveLinks(); });
+    url.addEventListener('input', () => { link.url = url.value.trim(); saveLinks(); });
+    remove.addEventListener('click', () => { linkDraft.splice(index, 1); drawLinks(); saveLinks(); });
+    row.append(title, url, remove);
+    list.append(row);
+  });
+}
+
+$('add-link').addEventListener('click', () => {
+  if (!linkDraft) linkDraft = [];
+  linkDraft.push({ title: '', url: 'https://', favicon: null });
+  drawLinks();
+  const rows = $('links-list').querySelectorAll('.link-row');
+  rows[rows.length - 1].querySelector('input').focus();
+});
+
+// ----- ad blocker -----
+
+function renderAdblock() {
+  const on = !!(state ? state.settings.adblock : adInfo.enabled);
+  const shield = $('shield');
+  shield.classList.toggle('on', on);
+  shield.title = on ? `Ad blocker on · ${adInfo.blocked.toLocaleString()} blocked` : 'Ad blocker off';
+  let text;
+  if (!on) text = 'Off. Turn it on to block ads and trackers.';
+  else if (adInfo.state === 'loading') text = 'Loading filter lists…';
+  else if (adInfo.state === 'failed') text = 'The filter lists could not be loaded. Check your connection; it tries again next launch.';
+  else text = `On · ${adInfo.blocked.toLocaleString()} blocked this session`;
+  $('adblock-status').textContent = text;
+}
+
+$('shield').addEventListener('click', () => { if (state) act('set', 'adblock', !state.settings.adblock); });
+
+// ----- updates -----
+
+function renderUpdate() {
+  const version = upd.version || '';
+  const lines = {
+    idle: ['Check whether a newer version is available.', ''],
+    checking: ['Checking for updates…', ''],
+    uptodate: ['Thanary is up to date.', state ? `Version ${state.version} is the latest.` : ''],
+    downloading: [`Downloading Thanary ${version}…`, 'You can keep browsing.'],
+    ready: [`Thanary ${version} is ready.`, 'Restart to finish updating.'],
+    blocked: [`Thanary ${version} is available.`, upd.message],
+    error: ['Could not check for updates.', upd.message],
+    unavailable: ['Updates only work in the installed app.', 'You are running a development build.'],
+  };
+  const [line, sub] = lines[upd.state] || lines.idle;
+  $('update-line').textContent = line;
+  $('update-sub').textContent = sub;
+  $('update-restart').hidden = upd.state !== 'ready';
+  $('update-download').hidden = upd.state !== 'blocked';
+  $('update-check').disabled = upd.state === 'checking' || upd.state === 'downloading';
+}
+
+$('update-check').addEventListener('click', () => act('update.check'));
+$('update-restart').addEventListener('click', () => act('update.restart'));
+$('update-download').addEventListener('click', () => act('update.download'));
+$('open-whatsnew').addEventListener('click', () => showWhatsNew({ version: state ? state.version : '', fresh: false }));
+
+// ----- AI token -----
+
+$('ai-token-save').addEventListener('click', () => {
+  const field = $('ai-token');
+  const value = field.value.trim();
+  if (!value) return;
+  tokenNote = '';
+  act('ai.setToken', value);
+  field.value = '';
+});
+
+$('ai-token-remove').addEventListener('click', () => { tokenNote = ''; act('ai.removeToken'); });
+$('ai-token-create').addEventListener('click', () => {
+  closeModal();
+  act('nav.open', 'https://github.com/settings/personal-access-tokens/new', true);
+});
+
+function onTokenResult(result) {
+  tokenNote = result && result.ok ? '' : 'That does not look like a valid token, or secure storage is unavailable on this Mac.';
+  if (modal === 'settings') renderSettings();
+}
+
+// ---------- Ask AI ----------
+
+let aiHistory = [];
+let aiBusy = false;
+let aiSeq = 0;
+
+function openAI() {
+  openModal('ai');
+  renderAI();
+  setTimeout(() => $('ai-input').focus(), 60);
+}
+
+function renderAI() {
+  const log = $('ai-log');
+  log.textContent = '';
+  const ready = !!(state && state.aiTokenSaved);
+  if (!aiHistory.length) {
+    const hint = el('div', 'ai-empty');
+    hint.append(icon('sparkle', 'ai-empty-icon'));
+    hint.append(el('p', '', ready ? 'Ask a question, or keep “Include this page” ticked and ask for a summary.' : 'Add your GitHub token to use the assistant.'));
+    if (!ready) {
+      const open = el('button', 'btn', 'Open AI Settings');
+      open.addEventListener('click', () => openSettings('ai'));
+      hint.append(open);
+    }
+    log.append(hint);
+  }
+  for (const message of aiHistory) {
+    const bubble = el('div', 'ai-msg ' + (message.error ? 'error' : message.role));
+    bubble.textContent = message.content;
+    log.append(bubble);
+  }
+  if (aiBusy) log.append(el('div', 'ai-msg assistant thinking', 'Thinking…'));
+  log.scrollTop = log.scrollHeight;
+  $('ai-send').disabled = aiBusy;
+}
+
+function sendAI() {
+  const input = $('ai-input');
+  const text = input.value.trim();
+  if (!text || aiBusy) return;
+  aiHistory.push({ role: 'user', content: text });
+  input.value = '';
+  aiBusy = true;
+  aiSeq += 1;
+  renderAI();
+  const history = aiHistory.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
+  act('ai.ask', aiSeq, history, $('ai-include').checked);
+}
+
+$('ai-btn').addEventListener('click', openAI);
+$('ai-send').addEventListener('click', sendAI);
+$('ai-clear').addEventListener('click', () => { aiHistory = []; aiBusy = false; aiSeq += 1; renderAI(); });
+$('ai-input').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+    event.preventDefault();
+    sendAI();
+  }
+});
+
+// ---------- What's New ----------
+
+function showWhatsNew(info) {
+  const entries = window.CHANGELOG || [];
+  const version = (info && info.version) || (state && state.version) || '';
+  const entry = entries.find((e) => e.version === version) || entries[0];
+  if (!entry) return;
+  $('wn-title').textContent = info && info.fresh ? 'Welcome to Thanary' : 'What’s new in Thanary';
+  $('wn-version').textContent = `Version ${version}`;
+  const list = $('wn-list');
+  list.textContent = '';
+  entry.items.forEach((item, index) => {
+    const row = el('div', 'wn-item');
+    row.style.animationDelay = 120 + index * 70 + 'ms';
+    row.append(icon(item.icon, 'wn-icon'));
+    const text = el('div');
+    text.append(el('strong', '', item.title), el('span', '', item.text));
+    row.append(text);
+    list.append(row);
+  });
+  openModal('whatsnew');
+}
+
+$('wn-done').addEventListener('click', closeModal);
 
 // ---------- Updates from the main process ----------
 
@@ -799,6 +1130,8 @@ function render() {
   const isStart = !tab || !tab.url;
   body.classList.toggle('start', isStart);
   $('page-menu').disabled = isStart;
+  const startSig = JSON.stringify([settings.userName, settings.workLinks, state.searchName]);
+  if (startSig !== lastStartSig) { lastStartSig = startSig; dirty.start = true; }
   flushLibrary(); // draws the start page / favorites bar if they just became visible
   if (isStart && (wasStart !== true || state.activeId !== lastActiveId)) revealStart(true);
   wasStart = isStart;
@@ -809,6 +1142,8 @@ function render() {
   renderTabs();
   renderAddress();
   renderGroups();
+  renderAdblock();
+  if (modal === 'settings') renderSettings();
   if (overviewOpen) renderOverview(false);
   lastActiveId = state.activeId;
   // Measuring forces a layout, so only do it when the sidebar or favorites bar actually changed.
@@ -829,10 +1164,29 @@ B.on('library', (next) => {
   renderLibrary();
 });
 
+B.on('update', (next) => {
+  upd = next;
+  if (modal === 'settings') renderUpdate();
+});
+
+B.on('adblock', (next) => {
+  adInfo = next;
+  renderAdblock();
+});
+
+B.on('ai', (reply) => {
+  if (!reply || reply.id !== aiSeq) return; // an answer to a chat that was cleared
+  aiBusy = false;
+  if (reply.error) aiHistory.push({ role: 'assistant', content: reply.error, error: true });
+  else aiHistory.push({ role: 'assistant', content: reply.text });
+  if (modal === 'ai') renderAI();
+});
+
 B.on('cmd', (name, payload) => {
   if (!state) return;
   if (name === 'focus-address') {
     closeOverview();
+    closeModal();
     address.focus();
   } else if (name === 'find') {
     openFind();
@@ -843,12 +1197,20 @@ B.on('cmd', (name, payload) => {
   } else if (name === 'thumbs') {
     thumbs = payload || {};
     if (overviewOpen) renderOverview(false);
+  } else if (name === 'settings') {
+    openSettings(payload);
+  } else if (name === 'whatsnew') {
+    showWhatsNew(payload);
+  } else if (name === 'ai') {
+    openAI();
+  } else if (name === 'ai-token') {
+    onTokenResult(payload);
   } else if (name === 'pane') {
+    closeModal();
     setPane(payload);
   } else if (name === 'rename') {
     if (payload.kind === 'group') {
-      setPane('root');
-      const row = document.querySelector(`#groups .row[data-id="${CSS.escape(payload.id)}"]`);
+      const row = document.querySelector(`#groupbar .chip[data-id="${CSS.escape(payload.id)}"]`);
       const group = state.groups.find((g) => g.id === payload.id);
       if (row && group) startRename(row, group.name, (value) => act('group.rename', group.id, value));
     } else if (payload.kind === 'bookmark') {

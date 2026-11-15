@@ -1,20 +1,27 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net, safeStorage } = require('electron');
 // electron-updater is large, so it is only loaded when an update check actually runs.
 let updater = null;
 const getUpdater = () => updater || (updater = require('electron-updater').autoUpdater);
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { promisify } = require('util');
 
 const execFileAsync = promisify(execFile);
 
-const SEARCH_URL = 'https://www.google.com/search?q=';
-// Searches made before Google became the default were saved as DuckDuckGo URLs.
-const isSearchURL = (url) => url.startsWith(SEARCH_URL) || url.startsWith('https://duckduckgo.com/?q=');
+const ENGINES = {
+  google: { name: 'Google', url: 'https://www.google.com/search?q=' },
+  duckduckgo: { name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=' },
+  bing: { name: 'Bing', url: 'https://www.bing.com/search?q=' },
+  brave: { name: 'Brave Search', url: 'https://search.brave.com/search?q=' },
+};
+const engine = () => ENGINES[settings.searchEngine] || ENGINES.google;
+const searchBase = () => engine().url;
+// Searches made with any engine (also ones used before the setting existed) are not "sites".
+const isSearchURL = (url) => Object.values(ENGINES).some((e) => url.startsWith(e.url));
 const DEFAULT_GROUP = 'default';
 const HISTORY_LIMIT = 3000;
 const isMac = process.platform === 'darwin';
@@ -30,7 +37,30 @@ let nextId = 1;
 let bookmarks = [];
 let readingList = [];
 let history = [];
-let settings = { sidebar: false, favBar: false };
+// Links shown on the start page. Editable in Settings > Start Page.
+const DEFAULT_WORK_LINKS = [
+  { title: 'THA Production', url: 'https://tha-production.com/', favicon: null },
+  { title: 'Projekte', url: 'https://tha-production.com/projekte.html', favicon: null },
+  { title: 'MyClient', url: 'https://tha-production.com/myclient.html', favicon: null },
+  { title: 'Angebote', url: 'https://tha-production.com/angebote.html', favicon: null },
+  { title: 'GitHub', url: 'https://github.com/THA-Production', favicon: null },
+  { title: 'Cloudflare', url: 'https://dash.cloudflare.com/', favicon: null },
+  { title: 'YouTube', url: 'https://www.youtube.com/@THA-Production', favicon: null },
+];
+
+let settings = {
+  sidebar: false,
+  favBar: false,
+  adblock: true,
+  autoUpdate: true,
+  searchEngine: 'google',
+  userName: null, // null = not chosen yet; filled from the Mac's user name on first launch
+  defaultGroupName: 'Tabs',
+  aiModel: 'openai/gpt-4.1-mini',
+  lastVersion: '', // the version whose "What's New" has been shown
+  workLinks: DEFAULT_WORK_LINKS.map((l) => ({ ...l })),
+};
+let freshProfile = false; // true when there was no saved state at all (first ever launch)
 
 let insets = { left: 0, top: 90 }; // where the page area starts, reported by the chrome UI
 let overlay = false; // true while the chrome draws over the page (suggestions, tab overview)
@@ -49,11 +79,10 @@ function loadStore() {
     data = null;
   }
   if (!data || typeof data !== 'object') {
+    freshProfile = true;
     bookmarks = [
       { id: uid(), title: 'Google', url: 'https://www.google.com/', favicon: null, favorite: true },
       { id: uid(), title: 'Wikipedia', url: 'https://www.wikipedia.org/', favicon: null, favorite: true },
-      { id: uid(), title: 'YouTube', url: 'https://www.youtube.com/', favicon: null, favorite: true },
-      { id: uid(), title: 'GitHub', url: 'https://github.com/', favicon: null, favorite: true },
     ];
     return;
   }
@@ -62,6 +91,8 @@ function loadStore() {
   readingList = list(data.readingList).filter((r) => r && isWebURL(r.url));
   history = list(data.history).filter((h) => h && isWebURL(h.url)).slice(0, HISTORY_LIMIT);
   settings = { ...settings, ...(data.settings || {}) };
+  settings.workLinks = cleanLinks(settings.workLinks);
+  if (!ENGINES[settings.searchEngine]) settings.searchEngine = 'google';
   const savedGroups = list(data.groups).filter((g) => g && typeof g.id === 'string' && g.id !== DEFAULT_GROUP);
   groups = [{ id: DEFAULT_GROUP, name: '' }, ...savedGroups.map((g) => ({ id: g.id, name: String(g.name || 'Untitled') }))];
   for (const saved of list(data.tabs)) {
@@ -85,9 +116,11 @@ function writeState(sync) {
   clearTimeout(saveTimer);
   saveTimer = null;
   const json = JSON.stringify({
-    groups: groups.filter((g) => g.id !== DEFAULT_GROUP),
-    activeGroupId,
-    tabs: tabs.map((t) => ({ groupId: t.groupId, url: t.url, title: t.title, favicon: slimIcon(t.favicon), active: activeByGroup[t.groupId] === t.id })),
+    groups: groups.filter((g) => g.id !== DEFAULT_GROUP && !g.private),
+    activeGroupId: isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId,
+    tabs: tabs
+      .filter((t) => !isPrivateGroup(t.groupId)) // private tabs are never written to disk
+      .map((t) => ({ groupId: t.groupId, url: t.url, title: t.title, favicon: slimIcon(t.favicon), active: activeByGroup[t.groupId] === t.id })),
     bookmarks,
     readingList,
     history: history.map((h) => ({ ...h, favicon: slimIcon(h.favicon) })),
@@ -139,10 +172,10 @@ function toURL(input) {
   const text = String(input || '').trim();
   if (!text) return null;
   if (isWebURL(text)) return text;
-  if (/\s/.test(text)) return SEARCH_URL + encodeURIComponent(text);
+  if (/\s/.test(text)) return searchBase() + encodeURIComponent(text);
   if (/^(localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?(\/.*)?$/i.test(text)) return 'http://' + text;
   if (/^[^\s/]+\.[a-z]{2,}(:\d+)?(\/.*)?$/i.test(text)) return 'https://' + text;
-  return SEARCH_URL + encodeURIComponent(text);
+  return searchBase() + encodeURIComponent(text);
 }
 
 // ---------- Layout ----------
@@ -224,12 +257,16 @@ function push() {
       .filter((t) => t.groupId === activeGroupId)
       .map(({ id, title, url, loading, favicon }) => ({ id, title, url, loading, favicon })),
     activeId: active ? active.id : null,
-    groups: groups.map((g) => ({ id: g.id, name: g.name, count: tabs.filter((t) => t.groupId === g.id).length })),
+    groups: groups.map((g) => ({ id: g.id, name: groupName(g), private: !!g.private, count: tabs.filter((t) => t.groupId === g.id).length })),
     activeGroupId,
     canGoBack: !!(nav && nav.canGoBack()),
     canGoForward: !!(nav && nav.canGoForward()),
     settings,
     fullscreen: !!(win && win.isFullScreen()),
+    searchName: engine().name,
+    version: app.getVersion(),
+    versions: { electron: process.versions.electron, chrome: process.versions.chrome },
+    aiTokenSaved,
   });
 }
 
@@ -272,7 +309,7 @@ function recentEntry(url) {
 }
 
 function addHistory(tab) {
-  if (!isWebURL(tab.url)) return;
+  if (!isWebURL(tab.url) || isPrivateGroup(tab.groupId)) return;
   if (history[0] && history[0].url === tab.url) return;
   history.unshift({ url: tab.url, title: tab.title || '', favicon: tab.favicon || null, ts: Date.now() });
   if (history.length > HISTORY_LIMIT) history.length = HISTORY_LIMIT;
@@ -316,7 +353,12 @@ function makeTab(groupId, url) {
 function ensureView(tab) {
   if (tab.view) return tab.view;
   const view = new WebContentsView({
-    webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      session: isPrivateGroup(tab.groupId) ? privateSession() : session.defaultSession,
+    },
   });
   view.setBackgroundColor('#ffffff');
   tab.view = view;
@@ -345,7 +387,7 @@ function ensureView(tab) {
     // Bookmarks saved without an icon pick one up the first time their site is visited.
     if (tab.favicon) {
       let changed = false;
-      for (const item of [...bookmarks, ...readingList]) {
+      for (const item of [...bookmarks, ...readingList, ...settings.workLinks]) {
         if (!item.favicon && sameSite(item.url, tab.url)) { item.favicon = tab.favicon; changed = true; }
       }
       if (changed) { save(); pushLibrary(); }
@@ -476,6 +518,7 @@ function moveTab(id, beforeId) {
 function moveTabToGroup(id, groupId) {
   const tab = tabs.find((t) => t.id === id);
   if (!tab || tab.groupId === groupId || !groups.some((g) => g.id === groupId)) return;
+  if (isPrivateGroup(tab.groupId) !== isPrivateGroup(groupId)) return; // a page can't change its session
   const from = tab.groupId;
   const siblings = tabs.filter((t) => t.groupId === from && t !== tab);
   tab.groupId = groupId;
@@ -509,19 +552,21 @@ function switchGroup(id) {
   switchTab(target.id);
 }
 
-function createGroup() {
-  const group = { id: uid(), name: 'Untitled' };
+function createGroup(isPrivate) {
+  const group = { id: uid(), name: isPrivate ? 'Private' : 'Untitled' };
+  if (isPrivate) group.private = true;
   groups.push(group);
-  settings.sidebar = true;
   switchGroup(group.id);
-  send('cmd', 'rename', { kind: 'group', id: group.id });
+  if (!isPrivate) send('cmd', 'rename', { kind: 'group', id: group.id });
 }
 
 function deleteGroup(id) {
-  if (id === DEFAULT_GROUP || !groups.some((g) => g.id === id)) return;
+  const group = groups.find((g) => g.id === id);
+  if (id === DEFAULT_GROUP || !group) return;
   for (const tab of tabs.filter((t) => t.groupId === id)) destroyTab(tab);
   groups = groups.filter((g) => g.id !== id);
   delete activeByGroup[id];
+  if (group.private && !groups.some((g) => g.private)) clearPrivateData(); // last private group: forget everything
   if (activeGroupId === id) switchGroup(DEFAULT_GROUP);
   else { push(); save(); }
 }
@@ -535,7 +580,7 @@ function popup(template) {
 function tabMenu(id) {
   const tab = tabs.find((t) => t.id === id);
   if (!tab) return;
-  const others = groups.filter((g) => g.id !== tab.groupId);
+  const others = groups.filter((g) => g.id !== tab.groupId && !!g.private === isPrivateGroup(tab.groupId));
   popup([
     { label: 'Close Tab', click: () => closeTab(id) },
     {
@@ -551,14 +596,14 @@ function tabMenu(id) {
     {
       label: 'Move to Tab Group',
       submenu: [
-        ...others.map((g) => ({ label: g.name || 'Tabs', click: () => moveTabToGroup(id, g.id) })),
+        ...others.map((g) => ({ label: groupName(g), click: () => moveTabToGroup(id, g.id) })),
         ...(others.length ? [{ type: 'separator' }] : []),
         {
           label: 'New Tab Group',
+          visible: !isPrivateGroup(tab.groupId),
           click: () => {
             const group = { id: uid(), name: 'Untitled' };
             groups.push(group);
-            settings.sidebar = true;
             moveTabToGroup(id, group.id);
             send('cmd', 'rename', { kind: 'group', id: group.id });
           },
@@ -572,11 +617,9 @@ function tabMenu(id) {
 }
 
 function groupMenu(id) {
-  if (id === DEFAULT_GROUP) return;
-  popup([
-    { label: 'Rename', click: () => send('cmd', 'rename', { kind: 'group', id }) },
-    { label: 'Delete Tab Group', click: () => deleteGroup(id) },
-  ]);
+  const items = [{ label: 'Rename', click: () => send('cmd', 'rename', { kind: 'group', id }) }];
+  if (id !== DEFAULT_GROUP) items.push({ label: 'Delete Tab Group', click: () => deleteGroup(id) });
+  popup(items);
 }
 
 function bookmarkMenu(id) {
@@ -652,7 +695,7 @@ function pageContextMenu(tab, params) {
     const text = params.selectionText.trim();
     template.push(
       { role: 'copy' },
-      { label: `Search for “${text.length > 28 ? text.slice(0, 28) + '…' : text}”`, click: () => createTab(SEARCH_URL + encodeURIComponent(text)) },
+      { label: `Search for “${text.length > 28 ? text.slice(0, 28) + '…' : text}”`, click: () => createTab(searchBase() + encodeURIComponent(text)) },
       { type: 'separator' },
     );
   }
@@ -688,9 +731,21 @@ function clearHistory() {
 
 // ---------- Window ----------
 
+const SETTING_RULES = {
+  sidebar: (v) => !!v,
+  favBar: (v) => !!v,
+  adblock: (v) => !!v,
+  autoUpdate: (v) => !!v,
+  searchEngine: (v) => (ENGINES[v] ? v : 'google'),
+  userName: (v) => String(v == null ? '' : v).trim().slice(0, 40),
+  aiModel: (v) => (/^[\w.\-\/]{2,80}$/.test(String(v || '').trim()) ? String(v).trim() : 'openai/gpt-4.1-mini'),
+};
+
 function setSetting(key, value) {
-  if (key !== 'sidebar' && key !== 'favBar') return;
-  settings[key] = !!value;
+  const rule = SETTING_RULES[key];
+  if (!rule) return;
+  settings[key] = rule(value);
+  if (key === 'adblock') { sendAdStatus(); buildMenu(); }
   push();
   save();
 }
@@ -724,7 +779,7 @@ function createWindow() {
   ui.setBackgroundColor('#00000000');
   win.contentView.addChildView(ui);
   ui.webContents.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  ui.webContents.on('did-finish-load', () => { push(); pushLibrary(); });
+  ui.webContents.on('did-finish-load', () => { push(); pushLibrary(); send('update', updateStatus); sendAdStatus(); announceVersion(); });
   // The chrome page never navigates anywhere else.
   ui.webContents.on('will-navigate', (event) => event.preventDefault());
   ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -749,7 +804,7 @@ function createWindow() {
   if (!tabs.some((t) => t.groupId === activeGroupId)) createTab(null);
   else switchGroup(activeGroupId);
 
-  if (!app.isPackaged && process.env.THANARY_DEV) require('./scripts/dev-hooks')({ win, ui, actions });
+  if (!app.isPackaged && process.env.THANARY_DEV) require('./scripts/dev-hooks')({ win, ui, actions, inspect: (code) => eval(code) });
 }
 
 // ---------- Actions the chrome UI may ask for ----------
@@ -772,17 +827,37 @@ const actions = {
   'nav.forward': goForward,
   'nav.reload': reload,
   'nav.stop': withWC((wc) => wc.stop()),
-  'group.new': () => createGroup(),
+  'group.new': () => createGroup(false),
+  'group.newPrivate': () => createGroup(true),
   'group.switch': (id) => switchGroup(id),
   'group.rename': (id, name) => {
-    const group = groups.find((g) => g.id === id);
-    const text = String(name || '').trim().slice(0, 60);
-    if (!group || id === DEFAULT_GROUP || !text) return;
-    group.name = text;
+    const text = String(name || '').trim().slice(0, 40);
+    if (!text) return;
+    if (id === DEFAULT_GROUP) {
+      settings.defaultGroupName = text;
+    } else {
+      const group = groups.find((g) => g.id === id);
+      if (!group) return;
+      group.name = text;
+    }
     push();
     save();
   },
   'group.menu': (id) => groupMenu(id),
+  'group.newMenu': () => popup([
+    { label: 'New Tab Group', click: () => createGroup(false) },
+    { label: 'New Private Tab Group', click: () => createGroup(true) },
+  ]),
+  'settings.open': (pane) => send('cmd', 'settings', pane || 'general'),
+  'update.check': () => checkForUpdates(true),
+  'update.restart': () => installUpdate(),
+  'update.download': () => shell.openExternal(`${RELEASES_URL}/latest`),
+  'whatsnew.open': () => send('cmd', 'whatsnew', { version: app.getVersion(), fresh: false }),
+  'work.save': (links) => { settings.workLinks = cleanLinks(links); save(); push(); },
+  'privacy.clear': () => clearSiteData(),
+  'ai.ask': (id, history, includePage) => askAI(id, Array.isArray(history) ? history : [], !!includePage),
+  'ai.setToken': (token) => { const ok = saveAiToken(token); push(); send('cmd', 'ai-token', { ok }); },
+  'ai.removeToken': () => { removeAiToken(); push(); },
   'bookmark.rename': (id, title) => {
     const bookmark = bookmarks.find((b) => b.id === id);
     const text = String(title || '').trim().slice(0, 120);
@@ -827,12 +902,330 @@ ipcMain.on('act', (event, name, ...args) => {
   if (Object.prototype.hasOwnProperty.call(actions, name)) actions[name](...args);
 });
 
+// ---------- Helpers: groups, private browsing, sessions, links ----------
+
+const groupName = (g) => (g.id === DEFAULT_GROUP ? settings.defaultGroupName || 'Tabs' : g.name || 'Untitled');
+const isPrivateGroup = (id) => !!(groups.find((g) => g.id === id) || {}).private;
+
+// Private tab groups use their own session that only ever lives in memory, so cookies, logins
+// and cache vanish when the last private group is closed (or the app quits).
+let privateSes = null;
+function privateSession() {
+  if (!privateSes) {
+    privateSes = session.fromPartition('thanary-private'); // no "persist:" prefix = memory only
+    configureSession(privateSes);
+  }
+  return privateSes;
+}
+
+function clearPrivateData() {
+  if (!privateSes) return;
+  privateSes.clearStorageData().catch(() => {});
+  privateSes.clearCache().catch(() => {});
+}
+
+function configureSession(ses) {
+  // Websites must not get camera, location, etc. without us adding a prompt later.
+  const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
+  // Sites such as Google and YouTube serve slower fallback pages, or refuse sign-in, when the
+  // user agent says "Electron". Identify as plain Chrome instead.
+  ses.setUserAgent(ses.getUserAgent().replace(/\s(?:Electron|Thanary)\/\S+/gi, ''));
+  hookAdblock(ses);
+}
+
+// The first name of whoever is logged in to this Mac, for the start page greeting.
+function systemFirstName() {
+  if (!isMac) return '';
+  try {
+    const full = execFileSync('/usr/bin/id', ['-F'], { encoding: 'utf8', timeout: 1000 }).trim();
+    return (full.split(/\s+/)[0] || '').slice(0, 40);
+  } catch {
+    return '';
+  }
+}
+
+// Start-page links come from the settings file and from the Settings screen: keep only sane ones.
+function cleanLinks(list) {
+  if (!Array.isArray(list)) return DEFAULT_WORK_LINKS.map((l) => ({ ...l }));
+  const out = [];
+  for (const link of list.slice(0, 16)) {
+    if (!link || !isWebURL(link.url) || link.url.length > 500) continue;
+    let title = String(link.title || '').trim().slice(0, 40);
+    if (!title) {
+      try { title = new URL(link.url).hostname.replace(/^www\./, ''); } catch { continue; }
+    }
+    out.push({ title, url: link.url, favicon: slimIcon(link.favicon) });
+  }
+  return out;
+}
+
+function clearSiteData() {
+  if (!win) return;
+  dialog
+    .showMessageBox(win, {
+      type: 'warning',
+      message: 'Clear cookies and website data?',
+      detail: 'You will be signed out of websites. Your history and bookmarks are not affected.',
+      buttons: ['Clear', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    .then(async ({ response }) => {
+      if (response !== 0) return;
+      await session.defaultSession.clearStorageData();
+      await session.defaultSession.clearCache();
+    });
+}
+
+function viewSource() {
+  const tab = activeTab();
+  if (!tab || !tab.view || !isWebURL(tab.url)) return;
+  const source = makeTab(tab.groupId, '');
+  loadTab(source, 'view-source:' + tab.url);
+  switchTab(source.id);
+}
+
+function openSettings(pane) {
+  if (!win) return;
+  ui.webContents.focus();
+  send('cmd', 'settings', pane || 'general');
+}
+
+function showUpdates() {
+  openSettings('updates');
+  checkForUpdates(true);
+}
+
+// Shows "What's New" the first time a version runs (and a welcome on the very first launch).
+function announceVersion() {
+  const version = app.getVersion();
+  if (settings.lastVersion === version) return;
+  const fresh = freshProfile;
+  settings.lastVersion = version;
+  freshProfile = false;
+  save();
+  setTimeout(() => send('cmd', 'whatsnew', { version, fresh }), 900);
+}
+
+// ---------- Ad and tracker blocker ----------
+// Uses the Ghostery filter engine with its ready-made ad and tracker lists (downloaded once,
+// cached, and refreshed weekly). It only looks at page sub-requests, never the page you typed.
+
+const ADBLOCK_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const adCacheFile = () => path.join(app.getPath('userData'), 'adblock-engine.bin');
+const REQUEST_TYPES = {
+  mainFrame: 'main_frame', subFrame: 'sub_frame', stylesheet: 'stylesheet', script: 'script', image: 'image',
+  font: 'font', object: 'object', xhr: 'xmlhttprequest', ping: 'ping', cspReport: 'csp_report',
+  media: 'media', webSocket: 'websocket',
+};
+
+let adEngine = null;
+let adRequest = null;
+let adState = 'loading'; // loading | ready | failed
+let adBlockedCount = 0;
+let adNotifyTimer = null;
+const hookedSessions = new WeakSet();
+
+const adStatus = () => ({ enabled: !!settings.adblock, state: adState, blocked: adBlockedCount });
+const sendAdStatus = () => send('adblock', adStatus());
+function adStatusSoon() {
+  if (!adNotifyTimer) adNotifyTimer = setTimeout(() => { adNotifyTimer = null; sendAdStatus(); }, 1000);
+}
+
+async function initAdblock() {
+  try {
+    const { FiltersEngine, Request } = await import('@ghostery/adblocker');
+    adRequest = Request;
+    const file = adCacheFile();
+    let cached = null;
+    let fresh = false;
+    try {
+      const stat = await fs.promises.stat(file);
+      cached = FiltersEngine.deserialize(new Uint8Array(await fs.promises.readFile(file)));
+      fresh = Date.now() - stat.mtimeMs < ADBLOCK_MAX_AGE_MS;
+    } catch {
+      // no usable cache yet
+    }
+    if (cached) {
+      adEngine = cached; // block with the saved lists straight away, even if they are a bit old
+      adState = 'ready';
+      sendAdStatus();
+    }
+    if (!fresh) {
+      try {
+        const downloaded = await FiltersEngine.fromPrebuiltAdsAndTracking(net.fetch);
+        adEngine = downloaded;
+        adState = 'ready';
+        fs.promises.writeFile(file, downloaded.serialize()).catch(() => {});
+      } catch (error) {
+        if (!cached) throw error;
+      }
+    }
+  } catch (error) {
+    console.error('Ad blocker unavailable:', error.message);
+    adState = 'failed';
+  }
+  sendAdStatus();
+}
+
+function hookAdblock(ses) {
+  if (hookedSessions.has(ses)) return;
+  hookedSessions.add(ses);
+  ses.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+    if (!settings.adblock || !adEngine || details.resourceType === 'mainFrame') {
+      callback({});
+      return;
+    }
+    try {
+      const wc = details.webContents;
+      const source = (wc && !wc.isDestroyed() ? wc.getURL() : '') || details.referrer || '';
+      const request = adRequest.fromRawDetails({
+        url: details.url,
+        sourceUrl: source,
+        type: REQUEST_TYPES[details.resourceType] || 'other',
+      });
+      const { match, redirect } = adEngine.match(request);
+      if (redirect) {
+        adBlockedCount += 1;
+        adStatusSoon();
+        callback({ redirectURL: redirect.dataUrl });
+        return;
+      }
+      if (match) {
+        adBlockedCount += 1;
+        adStatusSoon();
+        callback({ cancel: true });
+        return;
+      }
+    } catch {
+      // the blocker must never be the reason a page fails to load
+    }
+    callback({});
+  });
+}
+
+// ---------- AI assistant (GitHub Models) ----------
+// Your own GitHub token (kept encrypted with the Mac keychain) is sent only to GitHub, and only
+// when you press Ask. The page text is included only if "Include this page" is ticked.
+
+const AI_ENDPOINT = 'https://models.github.ai/inference/chat/completions';
+const tokenFile = () => path.join(app.getPath('userData'), 'ai-token.bin');
+let aiTokenSaved = false;
+
+function loadAiToken() {
+  try {
+    return safeStorage.decryptString(fs.readFileSync(tokenFile()));
+  } catch {
+    return null;
+  }
+}
+
+function saveAiToken(token) {
+  const text = String(token || '').trim();
+  if (!/^[\x21-\x7e]{20,400}$/.test(text)) return false; // printable characters, no spaces
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  try {
+    fs.writeFileSync(tokenFile(), safeStorage.encryptString(text), { mode: 0o600 });
+    aiTokenSaved = true;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeAiToken() {
+  try { fs.unlinkSync(tokenFile()); } catch { /* already gone */ }
+  aiTokenSaved = false;
+}
+
+async function askAI(id, history, includePage) {
+  const reply = (payload) => send('ai', { id, ...payload });
+  const token = loadAiToken();
+  if (!token) return reply({ error: 'Add your GitHub token in Settings > AI Assistant first.' });
+
+  const messages = [{ role: 'system', content: 'You are the assistant built into Thanary, the THA Production browser. Answer clearly and concisely.' }];
+  const tab = activeTab();
+  if (includePage && tab && tab.view && isWebURL(tab.url)) {
+    if (isPrivateGroup(tab.groupId)) return reply({ error: 'Pages from private tab groups are never shared with the AI.' });
+    let text = '';
+    try {
+      text = await tab.view.webContents.executeJavaScript('document.body ? document.body.innerText : ""');
+    } catch {
+      text = '';
+    }
+    messages.push({
+      role: 'system',
+      content: `The user is looking at this page.\nTitle: ${tab.title}\nURL: ${tab.url}\n\nPage text (may be cut off):\n${String(text).slice(0, 12000)}`,
+    });
+  }
+  for (const m of history.slice(-10)) {
+    if (m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string') {
+      messages.push({ role: m.role, content: m.content.slice(0, 4000) });
+    }
+  }
+
+  try {
+    const res = await net.fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ model: settings.aiModel, messages, max_tokens: 900 }),
+    });
+    const body = await res.text();
+    if (!res.ok) {
+      const reasons = {
+        401: 'GitHub rejected the token. Create a new one that has the "Models: read" permission.',
+        403: 'GitHub denied access. Check that the token can use GitHub Models.',
+        404: `GitHub does not know the model "${settings.aiModel}". Change it in Settings.`,
+        429: 'The free usage limit was reached. Try again later.',
+      };
+      return reply({ error: reasons[res.status] || `GitHub Models error ${res.status}: ${body.slice(0, 160)}` });
+    }
+    let json;
+    try {
+      json = JSON.parse(body);
+    } catch {
+      return reply({ error: `GitHub Models sent a reply Thanary could not read: ${body.slice(0, 120)}` });
+    }
+    const choice = json.choices && json.choices[0];
+    return reply({ text: (choice && choice.message && choice.message.content) || '(The model returned no answer.)' });
+  } catch (error) {
+    return reply({ error: 'Could not reach GitHub Models: ' + error.message });
+  }
+}
+
 // ---------- Auto-update (from GitHub Releases) ----------
 
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000; // every 4 hours
-let manualUpdateCheck = false;
+const RELEASES_URL = 'https://github.com/THA-Production/Thanary/releases';
 
+// What Settings > Updates shows.
+// state: idle | checking | uptodate | downloading | ready | blocked | error | unavailable
+let updateStatus = { state: 'idle', version: null, message: '' };
 let updaterReady = false;
+let winUpdateReady = false;
+
+function setUpdate(state, extra = {}) {
+  updateStatus = { state, version: null, message: '', ...extra };
+  send('update', updateStatus);
+}
+
+async function promptRestart(version, install) {
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    message: `Thanary ${version} is ready to install.`,
+    detail: 'Restart now to update, or it will install the next time you quit.',
+    buttons: ['Restart now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response === 0) install();
+}
 
 function setupAutoUpdate() {
   if (updaterReady) return;
@@ -845,50 +1238,57 @@ function setupAutoUpdate() {
   autoUpdater.autoInstallOnAppQuit = !isMac; // installs the downloaded update when the app quits
 
   autoUpdater.on('error', (error) => {
-    console.error('Update error:', error == null ? 'unknown' : error.message);
-    if (manualUpdateCheck) {
-      manualUpdateCheck = false;
-      dialog.showMessageBox({ type: 'error', message: 'Could not check for updates.', detail: String(error && error.message ? error.message : error) });
-    }
+    console.error('Update error:', error);
+    const message = String((error && error.message) || error || 'Unknown error').split('\n')[0].slice(0, 200);
+    setUpdate('error', { message });
   });
-  autoUpdater.on('update-not-available', () => {
-    if (manualUpdateCheck) {
-      manualUpdateCheck = false;
-      dialog.showMessageBox({ type: 'info', message: 'You are up to date.', detail: `Thanary ${app.getVersion()} is the latest version.` });
-    }
-  });
+  autoUpdater.on('update-not-available', () => setUpdate('uptodate'));
   autoUpdater.on('update-available', (info) => {
     if (isMac) downloadMacUpdate(info);
+    else setUpdate('downloading', { version: info.version });
   });
   autoUpdater.on('update-downloaded', (info) => {
-    manualUpdateCheck = false;
-    dialog
-      .showMessageBox({
-        type: 'info',
-        message: `Thanary ${info.version} is ready to install.`,
-        detail: 'Restart now to update, or it will install the next time you quit.',
-        buttons: ['Restart now', 'Later'],
-        defaultId: 0,
-        cancelId: 1,
-      })
-      .then(({ response }) => { if (response === 0) autoUpdater.quitAndInstall(); });
+    winUpdateReady = true;
+    setUpdate('ready', { version: info.version });
+    promptRestart(info.version, () => autoUpdater.quitAndInstall());
   });
-
 }
 
 // The first check waits a few seconds so it doesn't compete with the first page load.
 function startAutoUpdate() {
   setTimeout(() => {
-    checkForUpdates(false);
-    setInterval(() => checkForUpdates(false), UPDATE_CHECK_INTERVAL_MS);
+    const tick = () => { if (settings.autoUpdate) checkForUpdates(false); };
+    tick();
+    setInterval(tick, UPDATE_CHECK_INTERVAL_MS);
   }, 8000);
+}
+
+function checkForUpdates() {
+  if (!app.isPackaged) {
+    // Updates only work in an installed build, not when running with `npm start`.
+    setUpdate('unavailable', { message: 'Updates only work in the installed app, not in a development run.' });
+    return;
+  }
+  if (updateStatus.state === 'ready' || updateStatus.state === 'downloading') return;
+  setupAutoUpdate();
+  setUpdate('checking');
+  getUpdater().checkForUpdates().catch(() => {}); // errors are reported by the 'error' handler
+}
+
+function installUpdate() {
+  if (isMac) {
+    if (!stagedMacUpdate) return;
+    startMacInstaller(true);
+    app.quit();
+  } else if (winUpdateReady) {
+    getUpdater().quitAndInstall();
+  }
 }
 
 // ----- macOS self-updater -----
 // Downloads the new version from our GitHub Release, checks it against the checksum that was
 // published with it, unpacks it, then a small helper script swaps the app once Thanary quits.
 
-const RELEASES_URL = 'https://github.com/THA-Production/Thanary/releases';
 const APP_BUNDLE_ID = 'com.thanary.browser';
 
 // Runs after this process has exited: replace the app (rolling back if that fails), then reopen.
@@ -913,7 +1313,6 @@ rm -rf "$(dirname "$NEW")"
 let macUpdateBusy = false;
 let stagedMacUpdate = null; // { newApp, target, version } once downloaded, checked and unpacked
 let macInstallStarted = false;
-let blockedNoticeShown = false;
 
 class UpdateBlocked extends Error {}
 
@@ -941,16 +1340,12 @@ function pickMacZip(files) {
 async function downloadMacUpdate(info) {
   if (macUpdateBusy || stagedMacUpdate) return;
   macUpdateBusy = true;
-  const wasManual = manualUpdateCheck;
   try {
     if (!/^[0-9A-Za-z.+-]+$/.test(String(info.version))) throw new Error('Unexpected version number.');
     const target = macInstallTarget();
     const file = pickMacZip(info.files || []);
     if (!file) throw new Error('This release has no macOS download.');
-
-    if (wasManual) {
-      dialog.showMessageBox({ type: 'info', message: `Downloading Thanary ${info.version}…`, detail: 'It downloads in the background. You will be asked to restart when it is ready.' });
-    }
+    setUpdate('downloading', { version: info.version });
 
     const dir = path.join(app.getPath('temp'), `thanary-update-${info.version}`);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -982,41 +1377,14 @@ async function downloadMacUpdate(info) {
     if (stdout.trim() !== APP_BUNDLE_ID) throw new Error('The update is not a Thanary build.');
 
     stagedMacUpdate = { newApp, target, version: info.version };
-    manualUpdateCheck = false;
-    const { response } = await dialog.showMessageBox({
-      type: 'info',
-      message: `Thanary ${info.version} is ready to install.`,
-      detail: 'Restart now to update, or it will install the next time you quit.',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (response === 0) {
-      startMacInstaller(true);
-      app.quit();
-    }
+    setUpdate('ready', { version: info.version });
+    promptRestart(info.version, () => { startMacInstaller(true); app.quit(); });
   } catch (error) {
     console.error('Mac update failed:', error);
     const message = error instanceof Error ? error.message : String(error);
-    if (error instanceof UpdateBlocked) {
-      if (wasManual || !blockedNoticeShown) {
-        blockedNoticeShown = true;
-        const { response } = await dialog.showMessageBox({
-          type: 'info',
-          message: 'A new version of Thanary is available.',
-          detail: `${message}\n\nYou can download it from GitHub instead.`,
-          buttons: ['Open download page', 'Not now'],
-          defaultId: 0,
-          cancelId: 1,
-        });
-        if (response === 0) shell.openExternal(`${RELEASES_URL}/latest`);
-      }
-    } else if (wasManual) {
-      dialog.showMessageBox({ type: 'error', message: 'Could not install the update.', detail: message });
-    }
+    setUpdate(error instanceof UpdateBlocked ? 'blocked' : 'error', { version: info ? info.version : null, message });
   } finally {
     macUpdateBusy = false;
-    manualUpdateCheck = false;
   }
 }
 
@@ -1032,17 +1400,6 @@ function startMacInstaller(relaunch) {
 // If the user chose "Later", the update is applied when they eventually quit.
 app.on('quit', () => { if (isMac) startMacInstaller(false); });
 
-function checkForUpdates(manual) {
-  if (!app.isPackaged) {
-    // Updates only work in an installed build, not when running with `npm start`.
-    if (manual) dialog.showMessageBox({ type: 'info', message: 'Updates only work in the installed app.', detail: 'You are running a development build.' });
-    return;
-  }
-  setupAutoUpdate();
-  manualUpdateCheck = manual;
-  getUpdater().checkForUpdates().catch(() => {}); // errors are reported by the 'error' handler
-}
-
 // ---------- Menu and shortcuts ----------
 
 function showPane(pane) {
@@ -1056,16 +1413,35 @@ function showPane(pane) {
 function buildMenu() {
   const needsWindow = (fn) => () => { if (win) fn(); };
   const template = [
-    ...(isMac ? [{ role: 'appMenu' }] : []),
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { label: 'Check for Updates…', click: needsWindow(showUpdates) },
+            { type: 'separator' },
+            { label: 'Settings…', accelerator: 'CmdOrCtrl+,', click: needsWindow(() => openSettings('general')) },
+            { type: 'separator' },
+            { role: 'services' },
+            { type: 'separator' },
+            { role: 'hide' },
+            { role: 'hideOthers' },
+            { role: 'unhide' },
+            { type: 'separator' },
+            { role: 'quit' },
+          ],
+        }]
+      : []),
     {
       label: 'File',
       submenu: [
         { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: needsWindow(actions['tab.new']) },
-        { label: 'New Tab Group', accelerator: 'CmdOrCtrl+Alt+N', click: needsWindow(createGroup) },
+        { label: 'New Tab Group', accelerator: 'CmdOrCtrl+Alt+N', click: needsWindow(() => createGroup(false)) },
+        { label: 'New Private Tab Group', accelerator: 'CmdOrCtrl+Shift+N', click: needsWindow(() => createGroup(true)) },
         { type: 'separator' },
         { label: 'Open Location', accelerator: 'CmdOrCtrl+L', click: focusAddress },
         { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: needsWindow(() => closeTab(activeTabId())) },
-        ...(isMac ? [] : [{ type: 'separator' }, { role: 'quit' }]),
+        ...(isMac ? [] : [{ type: 'separator' }, { label: 'Settings…', accelerator: 'Ctrl+,', click: needsWindow(() => openSettings('general')) }, { role: 'quit' }]),
       ],
     },
     {
@@ -1083,15 +1459,26 @@ function buildMenu() {
         { label: 'Show Sidebar', accelerator: 'CmdOrCtrl+Shift+L', click: needsWindow(() => setSetting('sidebar', !settings.sidebar)) },
         { label: 'Show Favorites Bar', accelerator: 'CmdOrCtrl+Shift+B', click: needsWindow(() => setSetting('favBar', !settings.favBar)) },
         { label: 'Show Tab Overview', accelerator: 'CmdOrCtrl+Shift+\\', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'overview'); }) },
+        { label: 'Ask AI…', accelerator: 'CmdOrCtrl+Shift+A', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'ai'); }) },
+        { label: 'Block Ads and Trackers', type: 'checkbox', checked: !!settings.adblock, click: (item) => setSetting('adblock', item.checked) },
         { type: 'separator' },
         { label: 'Reload', accelerator: 'CmdOrCtrl+R', click: reload },
-        { label: 'Developer Tools', accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: withWC((wc) => wc.toggleDevTools()) },
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
         { type: 'separator' },
         { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Develop',
+      submenu: [
+        { label: 'Show Web Inspector', accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I', click: withWC((wc) => wc.toggleDevTools()) },
+        { label: 'Show JavaScript Console', accelerator: isMac ? 'Alt+Cmd+C' : 'Ctrl+Shift+J', click: withWC((wc) => wc.openDevTools({ mode: 'detach' })) },
+        { label: 'View Page Source', accelerator: isMac ? 'Alt+Cmd+U' : 'Ctrl+U', click: needsWindow(viewSource) },
+        { type: 'separator' },
+        { label: 'Inspect Thanary Itself', click: needsWindow(() => ui.webContents.openDevTools({ mode: 'detach' })) },
       ],
     },
     {
@@ -1140,7 +1527,10 @@ function buildMenu() {
       role: 'help',
       submenu: [
         { label: `Version ${app.getVersion()}`, enabled: false },
-        { label: 'Check for Updates…', click: () => checkForUpdates(true) },
+        { label: 'What’s New…', click: needsWindow(() => actions['whatsnew.open']()) },
+        { label: 'Check for Updates…', click: needsWindow(showUpdates) },
+        { type: 'separator' },
+        { label: 'THA Production Website', click: needsWindow(() => createTab('https://tha-production.com/')) },
       ],
     },
   ];
@@ -1150,25 +1540,19 @@ function buildMenu() {
 // ---------- App lifecycle ----------
 
 app.whenReady().then(() => {
-  // Websites must not get camera, location, etc. without us adding a prompt later.
-  const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(allowed.has(permission));
-  });
-
   // Installed builds get their icon from the app bundle; this is for `npm start`.
   if (isMac && !app.isPackaged) {
     app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
   }
 
-  // Sites such as Google and YouTube serve slower fallback pages, or refuse sign-in, when the
-  // user agent says "Electron". Identify as plain Chrome instead.
-  const ua = session.defaultSession.getUserAgent().replace(/\s(?:Electron|Thanary)\/\S+/gi, '');
-  session.defaultSession.setUserAgent(ua);
+  configureSession(session.defaultSession);
   // Open the connection to Google now, so the first search doesn't pay for DNS and TLS.
   session.defaultSession.preconnect({ url: 'https://www.google.com', numSockets: 2 });
 
   loadStore();
+  if (settings.userName == null) settings.userName = systemFirstName();
+  aiTokenSaved = fs.existsSync(tokenFile());
+  initAdblock();
   buildMenu();
   createWindow();
   startAutoUpdate();

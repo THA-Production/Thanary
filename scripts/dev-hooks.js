@@ -5,12 +5,13 @@
 //   THANARY_DEV=/tmp/shots THANARY_STEPS='[["wait",1500],["shot","start"]]' electron .
 //
 // Steps: ["wait", ms], ["shot", name], ["screen", name], ["act", actionName, ...args],
+//        ["main", "code run inside the main process"],
 //        ["js", "code run in the chrome page"], ["quit"]
 const fs = require('fs');
 const path = require('path');
 const { app } = require('electron');
 
-module.exports = function devHooks({ win, ui, actions }) {
+module.exports = function devHooks({ win, ui, actions, inspect }) {
   const dir = process.env.THANARY_DEV;
   let steps = [];
   try {
@@ -40,6 +41,7 @@ module.exports = function devHooks({ win, ui, actions }) {
           require('child_process').execFileSync('screencapture', ['-x', '-o', '-l', id, path.join(dir, args[0] + '.png')]);
         } else if (kind === 'act') await actions[args[0]](...args.slice(1));
         else if (kind === 'js') console.log('js>', JSON.stringify(await ui.webContents.executeJavaScript(args[0])));
+        else if (kind === 'main') console.log('main>', JSON.stringify(await inspect(args[0])));
         else if (kind === 'quit') app.quit();
       } catch (error) {
         console.log('step failed', kind, error.message);

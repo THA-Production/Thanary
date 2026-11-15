@@ -13,7 +13,8 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder --publish never",
-    "release": "npm version patch && git push --follow-tags"
+    "release": "npm version patch && git push --follow-tags",
+    "release:minor": "npm version minor && git push --follow-tags"
   },
   "build": {
     "appId": "com.thanary.browser",
@@ -56,6 +57,7 @@
     "electron-winstaller": false
   },
   "dependencies": {
+    "@ghostery/adblocker": "^2.20.3",
     "electron-updater": "^6.8.11"
   }
 }
