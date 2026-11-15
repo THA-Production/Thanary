@@ -1,0 +1,58 @@
+{
+  "name": "nova-browser",
+  "productName": "Nova Browser",
+  "version": "0.1.0",
+  "description": "A simple web browser built on Electron (Chromium).",
+  "author": "Thanary",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/THA-Production/Thanary.git"
+  },
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "release": "npm version patch && git push --follow-tags"
+  },
+  "build": {
+    "appId": "com.thanary.novabrowser",
+    "productName": "Nova Browser",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "THA-Production",
+      "repo": "Thanary"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  },
+  "allowScripts": {
+    "electron@45.3.2": true,
+    "electron-winstaller": false
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

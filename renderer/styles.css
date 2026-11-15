@@ -1,0 +1,102 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #202124;
+  user-select: none;
+}
+
+/* ---- Tab strip (40px) ---- */
+#tabstrip {
+  height: 40px;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 8px;
+  background: #dfe1e5;
+  -webkit-app-region: drag; /* empty space drags the window */
+}
+body.darwin #tabstrip { padding-left: 80px; }  /* room for the traffic lights */
+body.win32 #tabstrip  { padding-right: 150px; } /* room for the window buttons */
+
+#tabs { display: flex; align-items: flex-end; min-width: 0; flex: 0 1 auto; height: 100%; }
+
+.tab {
+  -webkit-app-region: no-drag;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 200px;
+  min-width: 48px;
+  flex: 0 1 200px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  margin-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  cursor: default;
+}
+.tab:hover { background: rgba(255, 255, 255, 0.5); }
+.tab.active { background: #ffffff; }
+.tab .icon { width: 16px; height: 16px; flex: none; border-radius: 3px; }
+.tab .icon.placeholder { background: #b8bbc0; border-radius: 50%; width: 12px; height: 12px; margin: 2px; }
+.tab.loading .icon { opacity: 0.5; }
+.tab .title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tab .close {
+  flex: none;
+  width: 18px; height: 18px;
+  border: 0; border-radius: 50%;
+  background: transparent;
+  font-size: 14px; line-height: 18px; padding: 0;
+  color: #5f6368;
+}
+.tab .close:hover { background: rgba(0, 0, 0, 0.12); }
+
+#new-tab {
+  -webkit-app-region: no-drag;
+  flex: none;
+  width: 28px; height: 28px;
+  margin: 0 0 2px 4px;
+  border: 0; border-radius: 50%;
+  background: transparent;
+  font-size: 18px; line-height: 26px; padding: 0;
+  color: #3c4043;
+}
+#new-tab:hover { background: rgba(0, 0, 0, 0.1); }
+
+/* ---- Toolbar (46px) ---- */
+#toolbar {
+  height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  background: #ffffff;
+  border-bottom: 1px solid #dadce0;
+}
+#toolbar button {
+  width: 32px; height: 32px;
+  border: 0; border-radius: 50%;
+  background: transparent;
+  font-size: 22px; line-height: 30px; padding: 0;
+  color: #3c4043;
+}
+#toolbar button:hover:not(:disabled) { background: #f1f3f4; }
+#toolbar button:disabled { color: #bdc1c6; }
+
+#address {
+  flex: 1;
+  height: 32px;
+  margin-left: 6px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  background: #f1f3f4;
+  font: inherit;
+  font-size: 14px;
+  color: #202124;
+  user-select: text;
+  outline: none;
+}
+#address:focus { background: #fff; border-color: #1a73e8; }

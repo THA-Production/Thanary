@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src https: http: data:">
+  <title>Nova Browser</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="tabstrip">
+    <div id="tabs"></div>
+    <button id="new-tab" title="New tab (Ctrl/Cmd+T)" aria-label="New tab">+</button>
+  </div>
+  <div id="toolbar">
+    <button id="back" title="Back" aria-label="Back">&#8249;</button>
+    <button id="forward" title="Forward" aria-label="Forward">&#8250;</button>
+    <button id="reload" title="Reload" aria-label="Reload">&#10227;</button>
+    <input id="address" type="text" spellcheck="false" autocomplete="off"
+           placeholder="Search or enter address" aria-label="Address bar">
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
