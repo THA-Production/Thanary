@@ -909,6 +909,8 @@ body.modal-palette #palette { display: flex; animation: sheet-in 0.32s var(--spr
 .sq { aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; padding: 8px; border-radius: 9px; color: #fff; transition: transform 0.25s var(--spring), filter 0.2s; }
 .sq:hover { transform: translateY(-3px); filter: brightness(1.12); }
 .sq-icon svg { width: 28px; height: 28px; }
+.sq-letter { font-size: 30px; font-weight: 650; line-height: 1; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); }
+.sq-fav { width: 34px; height: 34px; padding: 5px; border-radius: 9px; background: rgba(255, 255, 255, 0.92); object-fit: contain; }
 .sq-logo { width: 50%; }
 .sq-label { max-width: 100%; font-size: 11px; line-height: 1.2; text-align: center; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
@@ -1165,6 +1167,13 @@ body.dragging-tab, body.dragging-tab * { cursor: grabbing !important; }
 .tab.shifting { transition: transform 0.55s var(--spring); }
 .tab.settling { z-index: 30; transition: transform 0.5s var(--spring), box-shadow 0.3s var(--ease-out), opacity 0.25s; }
 .chip.drop { transform: scale(1.12); background: color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* ---------- Sleeping tabs, solid chrome in the lighter mode ---------- */
+
+.tab.sleeping { opacity: 0.6; }
+.tab.sleeping.active { opacity: 1; }
+body.low-fx.mac { --chrome: #2a2a2c; --sidebar: #222224; }
+@media (prefers-color-scheme: light) { body.low-fx.mac { --chrome: #f1f1f3; --sidebar: #e8e8eb; } }
 
 /* ---------- Reduced motion ---------- */
 

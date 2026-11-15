@@ -51,6 +51,7 @@
           <button id="toggle-sidebar" class="tb" title="Show Sidebar" aria-label="Show Sidebar"><i data-icon="sidebar"></i></button>
           <button id="back" class="tb" title="Back" aria-label="Back"><i data-icon="chevL"></i></button>
           <button id="forward" class="tb" title="Forward" aria-label="Forward"><i data-icon="chevR"></i></button>
+          <button id="home-btn" class="tb" title="Home (⇧⌘H)" aria-label="Home"><i data-icon="home"></i></button>
         </div>
 
         <div id="address-wrap">
@@ -189,11 +190,20 @@
                 </select>
               </div>
               <div class="set-row">
-                <div class="set-text"><strong>Glass effects</strong><span>Blur and glow. Choose Reduced for the lightest, fastest look.</span></div>
+                <div class="set-text"><strong>Glass effects</strong><span>Blur and glow. Automatic uses the lighter look on Macs with 8 GB of memory or less.</span></div>
                 <select id="set-effects">
+                  <option value="auto">Automatic</option>
                   <option value="full">Full</option>
                   <option value="reduced">Reduced</option>
                 </select>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Sleep inactive tabs</strong><span>Tabs you haven’t looked at for a while free their memory and reload when you click them. Helps a lot on Macs with 8 GB.</span></div>
+                <label class="switch"><input type="checkbox" id="set-sleep"><span></span></label>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Default web browser</strong><span id="default-status">Links you click in other apps open in your current default browser.</span></div>
+                <button id="default-btn" class="btn primary">Make Default</button>
               </div>
               <div class="set-row">
                 <div class="set-text"><strong>Show sidebar</strong><span>Bookmarks, reading list and history. ⇧⌘L</span></div>

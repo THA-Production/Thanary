@@ -3,6 +3,15 @@
 // ICONS in renderer.js.
 window.CHANGELOG = [
   {
+    version: '0.6.0',
+    items: [
+      { icon: 'globe', title: 'Use Thanary as your default browser', text: 'Thanary now registers as a real web browser. Make it your default in Settings > General, and links you click in Mail, Messages and other apps open here.' },
+      { icon: 'home', title: 'Home button', text: 'A Home button next to the arrows (⇧⌘H) takes you to the start page without losing the page you were on.' },
+      { icon: 'folder', title: 'More helpful sites on the start page', text: 'Platform, AI Tools, Creative, Business and Help groups, with the sites you use most. MyClient is no longer a tab group of its own.' },
+      { icon: 'bolt', title: 'Faster on Macs with 8 GB', text: 'Thanary now picks a lighter look automatically on smaller Macs, and tabs you haven’t used for a while go to sleep to free memory. Both can be changed in Settings > General.' },
+    ],
+  },
+  {
     version: '0.5.1',
     items: [
       { icon: 'tabs', title: 'Smooth tab dragging', text: 'Drag a tab and it lifts off the bar while the others glide out of the way. Let go and it springs into place. Drop it on a group to move it there, or press Escape to put it back.' },

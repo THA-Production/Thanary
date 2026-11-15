@@ -4,6 +4,7 @@ let updater = null;
 const getUpdater = () => updater || (updater = require('electron-updater').autoUpdater);
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
@@ -41,19 +42,47 @@ let bookmarks = [];
 let readingList = [];
 let history = [];
 // Links shown on the start page, grouped into columns. Editable in Settings > Start Page.
+const mkLink = (title, url, group) => ({ title, url, group, favicon: null });
 const DEFAULT_WORK_LINKS = [
-  { title: 'THA Production', url: 'https://tha-production.com/', group: 'Work', favicon: null },
-  { title: 'Projekte', url: 'https://tha-production.com/projekte.html', group: 'Work', favicon: null },
-  { title: 'Angebote', url: 'https://tha-production.com/angebote.html', group: 'Work', favicon: null },
-  { title: 'Team', url: 'https://tha-production.com/team.html', group: 'Work', favicon: null },
-  { title: 'YouTube', url: 'https://www.youtube.com/@THA-Production', group: 'Work', favicon: null },
-  { title: 'MyClient', url: 'https://tha-production.com/myclient.html', group: 'MyClient', favicon: null },
-  { title: 'Anmelden', url: 'https://tha-production.com/login.html', group: 'MyClient', favicon: null },
-  { title: 'Galerie', url: 'https://tha-production.com/gallery.html', group: 'MyClient', favicon: null },
-  { title: 'Kalender', url: 'https://tha-production.com/tha-calendar/', group: 'MyClient', favicon: null },
-  { title: 'GitHub', url: 'https://github.com/THA-Production', group: 'Dev & Cloud', favicon: null },
-  { title: 'Cloudflare', url: 'https://dash.cloudflare.com/', group: 'Dev & Cloud', favicon: null },
+  mkLink('YouTube', 'https://www.youtube.com/@THA-Production', 'Platform'),
+  mkLink('Instagram', 'https://www.instagram.com/zh.tha/', 'Platform'),
+  mkLink('TikTok', 'https://www.tiktok.com/@zh.tha', 'Platform'),
+  mkLink('Pinterest', 'https://www.pinterest.com/', 'Platform'),
+  mkLink('Behance', 'https://www.behance.net/', 'Platform'),
+  mkLink('MyClient', 'https://tha-production.com/myclient.html', 'Platform'),
+  mkLink('THA Production', 'https://tha-production.com/', 'Platform'),
+  mkLink('ChatGPT', 'https://chatgpt.com/', 'AI Tools'),
+  mkLink('Claude', 'https://claude.ai/', 'AI Tools'),
+  mkLink('Gemini', 'https://gemini.google.com/', 'AI Tools'),
+  mkLink('Higgsfield', 'https://higgsfield.ai/', 'AI Tools'),
+  mkLink('Adobe', 'https://www.adobe.com/', 'Creative'),
+  mkLink('Adobe Portfolio', 'https://portfolio.adobe.com/', 'Creative'),
+  mkLink('Milanote', 'https://milanote.com/', 'Creative'),
+  mkLink('Mentimeter', 'https://www.mentimeter.com/', 'Creative'),
+  mkLink('Soundly', 'https://getsoundly.com/', 'Creative'),
+  mkLink('Convertio', 'https://convertio.co/', 'Creative'),
+  mkLink('Texture Labs', 'https://texturelabs.org/', 'Creative'),
+  mkLink('Shutter Count', 'https://www.shuttercount.com/', 'Creative'),
+  mkLink('Cloudflare', 'https://dash.cloudflare.com/', 'Business'),
+  mkLink('Stripe', 'https://dashboard.stripe.com/', 'Business'),
+  mkLink('Namecheap', 'https://www.namecheap.com/', 'Business'),
+  mkLink('Linktree', 'https://linktr.ee/', 'Business'),
+  mkLink('OneNote', 'https://www.onenote.com/', 'Business'),
+  mkLink('GitHub', 'https://github.com/THA-Production', 'Business'),
+  mkLink('Apple Support', 'https://support.apple.com/', 'Help'),
+  mkLink('Google Translate', 'https://translate.google.com/', 'Help'),
+  mkLink('DeepL', 'https://www.deepl.com/', 'Help'),
+  mkLink('Wikipedia', 'https://www.wikipedia.org/', 'Help'),
+  mkLink('Stack Overflow', 'https://stackoverflow.com/', 'Help'),
+  mkLink('MDN Web Docs', 'https://developer.mozilla.org/', 'Help'),
 ];
+// The links the previous version shipped with, to tell an untouched list from one the user edited.
+const V2_DEFAULT_LINK_URLS = new Set([
+  'https://tha-production.com/', 'https://tha-production.com/projekte.html', 'https://tha-production.com/angebote.html',
+  'https://tha-production.com/team.html', 'https://www.youtube.com/@THA-Production', 'https://tha-production.com/myclient.html',
+  'https://tha-production.com/login.html', 'https://tha-production.com/gallery.html', 'https://tha-production.com/tha-calendar/',
+  'https://github.com/THA-Production', 'https://dash.cloudflare.com/',
+]);
 // The links v0.3.x shipped with, to tell an untouched list from one the user edited.
 const OLD_DEFAULT_LINK_URLS = new Set([
   'https://tha-production.com/', 'https://tha-production.com/projekte.html', 'https://tha-production.com/myclient.html',
@@ -67,8 +96,9 @@ let settings = {
   adblock: true,
   autoUpdate: true,
   autoLogin: true,
-  effects: 'full', // 'reduced' turns off the blur and ambient glow
-  linksVersion: 2,
+  effects: 'auto', // auto = lighter on Macs with 8 GB or less; or 'full' / 'reduced'
+  sleepTabs: true, // tabs you have not looked at for a while free their memory
+  linksVersion: 3,
   searchEngine: 'google',
   userName: null, // null = not chosen yet; filled from the Mac's user name on first launch
   defaultGroupName: 'Tabs',
@@ -117,6 +147,20 @@ function loadStore() {
   } else {
     settings.workLinks = cleanLinks(settings.workLinks);
   }
+  if (savedVersion < 3) {
+    // v0.6: a bigger set of helpful sites; "MyClient" is no longer a group of its own.
+    const links = settings.workLinks || [];
+    const untouched = links.length === V2_DEFAULT_LINK_URLS.size && links.every((l) => V2_DEFAULT_LINK_URLS.has(l.url));
+    if (untouched) {
+      settings.workLinks = DEFAULT_WORK_LINKS.map((l) => ({ ...l }));
+    } else {
+      const have = new Set(links.map((l) => l.url));
+      const renamed = links.map((l) => (l.group === 'MyClient' ? { ...l, group: 'Platform' } : l));
+      settings.workLinks = [...renamed, ...DEFAULT_WORK_LINKS.filter((l) => !have.has(l.url)).map((l) => ({ ...l }))].slice(0, 60);
+    }
+    if (settings.effects === 'full') settings.effects = 'auto';
+    settings.linksVersion = 3;
+  }
   if (!ENGINES[settings.searchEngine]) settings.searchEngine = 'google';
   settings.sitePermissions = cleanPermissions(settings.sitePermissions);
   downloads = list(data.downloads).filter((d) => d && typeof d.id === 'string' && typeof d.path === 'string' && d.state === 'completed').slice(0, 50);
@@ -132,6 +176,17 @@ function loadStore() {
   }
   for (const g of groups) normalizePins(g.id);
   if (groups.some((g) => g.id === data.activeGroupId)) activeGroupId = data.activeGroupId;
+  if (savedVersion < 3) {
+    // the "MyClient" tab group is gone: its tabs move to the main group
+    const legacy = groups.filter((g) => g.id !== DEFAULT_GROUP && g.name === 'MyClient');
+    for (const g of legacy) {
+      for (const t of tabs) if (t.groupId === g.id) t.groupId = DEFAULT_GROUP;
+      delete activeByGroup[g.id];
+    }
+    groups = groups.filter((g) => !legacy.includes(g));
+    if (!groups.some((g) => g.id === activeGroupId)) activeGroupId = DEFAULT_GROUP;
+    normalizePins(DEFAULT_GROUP);
+  }
 }
 
 // Big inline icons would bloat the file that is rewritten after every navigation.
@@ -285,7 +340,7 @@ function push() {
   send('state', {
     tabs: tabs
       .filter((t) => t.groupId === activeGroupId)
-      .map(({ id, title, url, loading, favicon, pinned }) => ({ id, title, url, loading, favicon, pinned: !!pinned })),
+      .map(({ id, title, url, loading, favicon, pinned, sleeping }) => ({ id, title, url, loading, favicon, pinned: !!pinned, sleeping: !!sleeping })),
     activeId: active ? active.id : null,
     groups: groups.map((g) => ({ id: g.id, name: groupName(g), private: !!g.private, count: tabs.filter((t) => t.groupId === g.id).length })),
     activeGroupId,
@@ -299,6 +354,8 @@ function push() {
     aiTokenSaved,
     logins: vaultList(),
     permissions: permissionList(),
+    effectsActive: effectiveEffects(),
+    defaultBrowser: defaultBrowserCached,
   });
 }
 
@@ -377,7 +434,7 @@ function openURL(url, newTab) {
 // ---------- Tabs ----------
 
 function makeTab(groupId, url) {
-  const tab = { id: nextId++, groupId, url: url || '', title: '', favicon: null, loading: false, view: null, thumb: null, pinned: false };
+  const tab = { id: nextId++, groupId, url: url || '', title: '', favicon: null, loading: false, view: null, thumb: null, pinned: false, sleeping: false, lastActive: Date.now() };
   tabs.push(tab);
   return tab;
 }
@@ -489,6 +546,9 @@ function switchTab(id) {
   if (!tab || !win) return;
   const previous = activeTab();
   if (previous && previous !== tab) captureThumb(previous);
+  if (previous) previous.lastActive = Date.now();
+  tab.lastActive = Date.now();
+  tab.sleeping = false;
   activeGroupId = tab.groupId;
   activeByGroup[tab.groupId] = tab.id;
   if (tab.url && !tab.view) loadTab(tab, tab.url); // restored tabs load the first time they're shown
@@ -799,7 +859,8 @@ const SETTING_RULES = {
   adblock: (v) => !!v,
   autoUpdate: (v) => !!v,
   autoLogin: (v) => !!v,
-  effects: (v) => (v === 'reduced' ? 'reduced' : 'full'),
+  effects: (v) => (v === 'full' || v === 'reduced' ? v : 'auto'),
+  sleepTabs: (v) => !!v,
   searchEngine: (v) => (ENGINES[v] ? v : 'google'),
   userName: (v) => String(v == null ? '' : v).trim().slice(0, 40),
   aiModel: (v) => (/^[\w.\-\/]{2,80}$/.test(String(v || '').trim()) ? String(v).trim() : 'openai/gpt-4.1-mini'),
@@ -810,6 +871,7 @@ function setSetting(key, value) {
   if (!rule) return;
   settings[key] = rule(value);
   if (key === 'adblock') { sendAdStatus(); buildMenu(); }
+  if (key === 'effects') applyEffects();
   push();
   save();
 }
@@ -876,6 +938,7 @@ function createWindow() {
   layout();
   if (!tabs.some((t) => t.groupId === activeGroupId)) createTab(null);
   else switchGroup(activeGroupId);
+  applyEffects();
 
   if (!app.isPackaged && process.env.THANARY_DEV) require('./scripts/dev-hooks')({ win, ui, actions, inspect: (code) => eval(code) });
 }
@@ -935,6 +998,8 @@ const actions = {
   'privacy.clear': () => clearSiteData(),
   'app.open': (url, groupName) => openApp(url, groupName),
   'tab.reopen': () => reopenClosedTab(),
+  'home': () => goHome(),
+  'default.set': () => makeDefaultBrowser(),
   'tab.pin': (id, pinned) => setPinned(id, !!pinned),
   'page.print': () => printPage(),
   'page.pdf': () => { savePDF().catch((error) => console.error('PDF export failed:', error.message)); },
@@ -1064,7 +1129,7 @@ function systemFirstName() {
 function cleanLinks(list) {
   if (!Array.isArray(list)) return DEFAULT_WORK_LINKS.map((l) => ({ ...l }));
   const out = [];
-  for (const link of list.slice(0, 16)) {
+  for (const link of list.slice(0, 60)) {
     if (!link || !isWebURL(link.url) || link.url.length > 500) continue;
     let title = String(link.title || '').trim().slice(0, 40);
     if (!title) {
@@ -1313,6 +1378,139 @@ async function askAI(id, history, includePage) {
   } catch (error) {
     return reply({ error: 'Could not reach GitHub Models: ' + error.message });
   }
+}
+
+// ---------- Home ----------
+
+// Lands on the start page without throwing anything away: reuse an empty start-page tab if one
+// is open in this group, otherwise open a new one.
+function goHome() {
+  if (!win) return;
+  const groupId = isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId;
+  const here = activeTab();
+  if (here && !here.url && !here.view && here.groupId === groupId) return; // already home
+  const blank = tabs.find((t) => t.groupId === groupId && !t.url && !t.view);
+  if (blank) switchTab(blank.id);
+  else createTab(null, { groupId });
+}
+
+// ---------- Links from other apps, and the default browser ----------
+// Thanary registers for http and https links (Info.plist on the Mac), so it appears in
+// System Settings > Desktop & Dock > Default web browser, and links clicked in Mail, Messages,
+// etc. arrive here.
+
+const pendingExternalURLs = [];
+
+function openExternalURL(raw) {
+  const url = String(raw || '').trim();
+  if (!isWebURL(url)) return; // only web addresses; never javascript:, file: or other schemes
+  if (!win) {
+    pendingExternalURLs.push(url);
+    if (app.isReady()) { createWindow(); flushExternalURLs(); }
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  const tab = activeTab();
+  if (tab && !tab.url && !tab.view && !isPrivateGroup(tab.groupId)) navigate(tab, url); // reuse an empty start tab
+  else createTab(url, { groupId: isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId });
+}
+
+function flushExternalURLs() {
+  for (const url of pendingExternalURLs.splice(0)) openExternalURL(url);
+}
+
+// An .html file opened with Thanary (File > Open With, or dropped on the icon).
+function openLocalFile(filePath) {
+  if (!/\.(html?|xhtml)$/i.test(String(filePath))) return;
+  if (!win && app.isReady()) createWindow();
+  if (!win) return;
+  const tab = makeTab(isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId, '');
+  loadTab(tab, pathToFileURL(filePath).href);
+  switchTab(tab.id);
+}
+
+let defaultBrowserCached = false;
+function checkDefaultBrowser() {
+  try {
+    return app.isDefaultProtocolClient('https') && app.isDefaultProtocolClient('http');
+  } catch {
+    return false;
+  }
+}
+
+function makeDefaultBrowser() {
+  if (!app.isPackaged) {
+    send('cmd', 'default-note', 'Only the installed app can become the default browser.');
+    return;
+  }
+  app.setAsDefaultProtocolClient('http');
+  app.setAsDefaultProtocolClient('https');
+  // macOS asks for confirmation; check again while the answer comes in.
+  for (const delay of [2500, 8000, 20000]) {
+    setTimeout(() => { defaultBrowserCached = checkDefaultBrowser(); push(); }, delay);
+  }
+}
+
+// ---------- Lighter on small Macs ----------
+
+const LOW_MEMORY_BYTES = 9 * 1024 ** 3; // an 8 GB Mac reports 8 GiB
+
+const isLowMemoryMac = () => os.totalmem() < LOW_MEMORY_BYTES;
+
+// "Auto" uses the lighter look on Macs with 8 GB of memory or less.
+function effectiveEffects() {
+  if (settings.effects === 'full' || settings.effects === 'reduced') return settings.effects;
+  return isLowMemoryMac() ? 'reduced' : 'full';
+}
+
+// In the lighter mode the window stops blending with the desktop (macOS vibrancy), which saves
+// the graphics chip real work on small machines.
+function applyEffects() {
+  if (!win || !isMac) return;
+  const light = effectiveEffects() === 'reduced';
+  try {
+    win.setVibrancy(light ? null : 'sidebar');
+    win.setBackgroundColor(light ? (nativeTheme.shouldUseDarkColors ? '#2a2a2c' : '#f1f1f3') : '#00000000');
+  } catch {
+    // an older macOS may not support every option; the page styling still applies
+  }
+}
+
+// ---------- Sleeping tabs ----------
+// A tab you have not looked at for a while gives its page process back to the system. It stays in
+// the tab bar with its title and icon, and reloads when you click it. This is the biggest memory
+// saving on a Mac with 8 GB.
+
+const SLEEP_CHECK_MS = 60 * 1000;
+
+function sleepTab(tab) {
+  if (!tab.view) return;
+  if (!tab.view.webContents.isDestroyed()) {
+    win.contentView.removeChildView(tab.view);
+    tab.view.webContents.close();
+  }
+  tab.view = null;
+  tab.sleeping = true;
+  pushSoon();
+}
+
+// idleOverride (milliseconds) is for tests.
+function sleepTick(idleOverride) {
+  if (!win || !settings.sleepTabs) return 0;
+  const idleMs = idleOverride != null ? idleOverride : (isLowMemoryMac() ? 10 : 20) * 60 * 1000;
+  const now = Date.now();
+  let slept = 0;
+  for (const tab of tabs) {
+    if (!tab.view || tab.id === activeTabId() || now - (tab.lastActive || 0) < idleMs) continue;
+    const wc = tab.view.webContents;
+    if (wc.isDestroyed() || wc.isLoading() || wc.isCurrentlyAudible() || wc.isDevToolsOpened()) continue;
+    if (!isWebURL(tab.failedUrl || tab.url)) continue;
+    sleepTab(tab);
+    slept += 1;
+  }
+  return slept;
 }
 
 // ---------- Error pages, crash recovery ----------
@@ -2146,6 +2344,7 @@ function buildMenu() {
       submenu: [
         { label: 'Back', accelerator: 'CmdOrCtrl+[', click: goBack },
         { label: 'Forward', accelerator: 'CmdOrCtrl+]', click: goForward },
+        { label: 'Home', accelerator: 'CmdOrCtrl+Shift+H', click: needsWindow(goHome) },
         { type: 'separator' },
         { label: 'Show All History', accelerator: 'CmdOrCtrl+Y', click: () => showPane('history') },
         { label: 'Clear History…', click: clearHistory },
@@ -2199,7 +2398,19 @@ function buildMenu() {
 
 // ---------- App lifecycle ----------
 
+// One Thanary at a time: opening a link while it is running hands the link to the running copy.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+app.on('second-instance', (_event, argv) => {
+  const urls = argv.filter((a) => isWebURL(a));
+  if (urls.length) urls.forEach(openExternalURL);
+  else if (win) { win.show(); win.focus(); }
+});
+app.on('open-url', (event, url) => { event.preventDefault(); openExternalURL(url); }); // a link clicked in another app
+app.on('open-file', (event, filePath) => { event.preventDefault(); openLocalFile(filePath); });
+
 app.whenReady().then(() => {
+  if (!gotLock) return;
   // Installed builds get their icon from the app bundle; this is for `npm start`.
   if (isMac && !app.isPackaged) {
     app.dock.setIcon(path.join(__dirname, 'build', 'icon.png'));
@@ -2216,10 +2427,15 @@ app.whenReady().then(() => {
   initAdblock();
   buildMenu();
   createWindow();
+  flushExternalURLs();
+  for (const arg of process.argv.slice(1)) if (isWebURL(arg)) openExternalURL(arg); // Windows/Linux start-up links
+  if (app.isPackaged) defaultBrowserCached = checkDefaultBrowser();
+  setInterval(sleepTick, SLEEP_CHECK_MS);
   startAutoUpdate();
 
   nativeTheme.on('updated', () => {
     if (win && !isMac) win.setTitleBarOverlay(overlayColors());
+    applyEffects();
   });
 
   app.on('activate', () => {

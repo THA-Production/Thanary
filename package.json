@@ -32,7 +32,22 @@
       "category": "public.app-category.productivity",
       "extendInfo": {
         "NSCameraUsageDescription": "Websites you allow can use the camera.",
-        "NSMicrophoneUsageDescription": "Websites you allow can use the microphone."
+        "NSMicrophoneUsageDescription": "Websites you allow can use the microphone.",
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "Web site address",
+            "CFBundleURLSchemes": ["http", "https"],
+            "CFBundleTypeRole": "Viewer"
+          }
+        ],
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "HTML document",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": ["public.html", "public.xhtml"]
+          }
+        ]
       },
       "identity": "-",
       "hardenedRuntime": false,

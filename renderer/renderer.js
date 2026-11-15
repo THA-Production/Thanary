@@ -403,6 +403,7 @@ function clearDrag() {
 function updateTabEl(node, tab) {
   node.classList.toggle('active', tab.id === state.activeId);
   node.classList.toggle('pinned', !!tab.pinned);
+  node.classList.toggle('sleeping', !!tab.sleeping);
   node.setAttribute('aria-selected', String(tab.id === state.activeId));
   const title = tab.title || (tab.url ? hostOf(tab.url) || tab.url : 'Start Page');
   const titleEl = node.querySelector('.tab-title');
@@ -854,7 +855,7 @@ const isBrandHome = (link) => {
 // MyClient pages open as one "app" tab: clicking again jumps back to it instead of piling up tabs.
 function openLink(link, event) {
   const newTab = !!(event && (event.metaKey || event.ctrlKey));
-  if (link.group === 'MyClient' && !newTab) act('app.open', link.url, 'MyClient');
+  if (/tha-production\.com\/(myclient|login|gallery|tha-calendar)/.test(link.url) && !newTab) act('app.open', link.url);
   else act('nav.open', link.url, newTab);
 }
 
@@ -906,7 +907,7 @@ function renderStart() {
   // colourful tiles
   const tiles = $('portal-tiles');
   tiles.textContent = '';
-  for (const link of links) {
+  for (const link of links.slice(0, 12)) { // the first twelve links become tiles
     const sq = el('button', 'sq');
     const brand = isBrandHome(link);
     sq.style.background = brand ? '#000' : PALETTE[hueOf(link.title) % PALETTE.length];
@@ -916,6 +917,15 @@ function renderStart() {
       logo.alt = '';
       logo.draggable = false;
       sq.append(logo);
+    } else if (link.favicon && /^https?:|^data:image\//i.test(link.favicon)) {
+      const fav = el('img', 'sq-fav'); // the site's own icon, once it has been visited
+      fav.src = link.favicon;
+      fav.alt = '';
+      fav.draggable = false;
+      fav.addEventListener('error', () => fav.replaceWith(icon(linkIcon(link), 'sq-icon')));
+      sq.append(fav);
+    } else if (linkIcon(link) === 'globe') {
+      sq.append(el('span', 'sq-letter', (link.title[0] || '?').toUpperCase())); // a letter looks better than a plain globe
     } else {
       sq.append(icon(linkIcon(link), 'sq-icon'));
     }
@@ -1045,7 +1055,7 @@ $('start-go').addEventListener('click', () => {
 
 for (const button of document.querySelectorAll('.rail-btn')) {
   button.addEventListener('click', () => {
-    if (button.dataset.app) { act('app.open', button.dataset.app, 'MyClient'); return; }
+    if (button.dataset.app) { act('app.open', button.dataset.app); return; }
     if (button.dataset.settings !== undefined) { openSettings(); return; }
     if (button.dataset.pane) { act('set', 'sidebar', true); setPane(button.dataset.pane); return; }
     if (button.dataset.feed) { feedTab = button.dataset.feed; renderFeed(); }
@@ -1283,7 +1293,9 @@ function renderSettings() {
   if (!state) return;
   const s = state.settings;
   setEngine.value = s.searchEngine;
-  $('set-effects').value = s.effects || 'full';
+  $('set-effects').value = s.effects || 'auto';
+  $('set-sleep').checked = s.sleepTabs !== false;
+  renderDefaultBrowser();
   $('set-sidebar').checked = !!s.sidebar;
   $('set-favbar').checked = !!s.favBar;
   $('set-adblock').checked = !!s.adblock;
@@ -1302,6 +1314,8 @@ function renderSettings() {
 }
 
 setEngine.addEventListener('change', () => act('set', 'searchEngine', setEngine.value));
+$('set-sleep').addEventListener('change', (event) => act('set', 'sleepTabs', event.target.checked));
+$('default-btn').addEventListener('click', () => { defaultNote = 'Waiting for macOS to confirm…'; renderDefaultBrowser(); act('default.set'); });
 $('set-effects').addEventListener('change', (event) => act('set', 'effects', event.target.value));
 $('set-sidebar').addEventListener('change', (event) => act('set', 'sidebar', event.target.checked));
 $('set-favbar').addEventListener('change', (event) => act('set', 'favBar', event.target.checked));
@@ -1548,6 +1562,22 @@ function showWhatsNew(info) {
 }
 
 $('wn-done').addEventListener('click', closeModal);
+
+// ---------- Default browser ----------
+
+let defaultNote = '';
+
+function renderDefaultBrowser() {
+  if (!state) return;
+  const isDefault = !!state.defaultBrowser;
+  if (isDefault) defaultNote = '';
+  $('default-status').textContent = isDefault
+    ? 'Thanary is your default web browser. Links from other apps open here.'
+    : defaultNote || 'Links you click in other apps open in your current default browser.';
+  $('default-btn').hidden = isDefault;
+}
+
+$('home-btn').addEventListener('click', () => act('home'));
 
 // ---------- Auto-Login settings ----------
 
@@ -1800,6 +1830,7 @@ let palIndex = 0;
 function paletteCommands() {
   const hasPage = !!(activeTab() && activeTab().url);
   const all = [
+    { title: 'Go Home (Start Page)', hint: '⇧⌘H', run: () => act('home') },
     { title: 'New Tab', hint: '⌘T', run: () => act('tab.new') },
     { title: 'Reopen Closed Tab', hint: '⇧⌘T', run: () => act('tab.reopen') },
     { title: 'New Private Tab Group', hint: '⇧⌘N', run: () => act('group.newPrivate') },
@@ -1958,7 +1989,7 @@ let lastLayoutKey = '';
 function render() {
   const settings = state.settings;
   body.classList.toggle('sidebar-open', !!settings.sidebar);
-  body.classList.toggle('low-fx', settings.effects === 'reduced');
+  body.classList.toggle('low-fx', state.effectsActive === 'reduced');
   body.classList.toggle('favbar-open', !!settings.favBar);
   body.classList.toggle('fullscreen', !!state.fullscreen);
   $('toggle-sidebar').title = settings.sidebar ? 'Hide Sidebar' : 'Show Sidebar';
@@ -2047,6 +2078,9 @@ B.on('cmd', (name, payload) => {
     openSettings(payload);
   } else if (name === 'whatsnew') {
     showWhatsNew(payload);
+  } else if (name === 'default-note') {
+    defaultNote = payload;
+    renderDefaultBrowser();
   } else if (name === 'backdrop') {
     const backdrop = $('backdrop');
     if (payload && (modal || overlayHold)) {

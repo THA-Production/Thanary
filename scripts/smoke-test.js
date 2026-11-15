@@ -151,6 +151,34 @@ function run(port) {
     { name: 'the app is still running after the restart delay (development build: nothing to install)', step: ['main', '"alive"'], expect: (v) => v === 'alive' },
     { step: ['main', '(setUpdate("idle"), "reset")'] },
 
+    // links from other apps, Home, default-browser safety
+    { step: ['main', '(globalThis.__tabsBefore = tabs.length, "ok")'] },
+    { step: ['main', '(app.emit("open-url", { preventDefault() {} }, BASE + "/page?ext=1"), app.emit("open-url", { preventDefault() {} }, "javascript:alert(1)"), app.emit("open-url", { preventDefault() {} }, "file:///etc/hosts"), "sent")'.replace(/BASE/g, JSON.stringify(base))] },
+    { step: ['wait', 600] },
+    { name: 'a web link from another app opens in a tab, and unsafe links are ignored', step: ['main', 'JSON.stringify({ opened: tabs.some((t) => t.url === ' + JSON.stringify(base + '/page?ext=1') + '), extra: tabs.length - globalThis.__tabsBefore, unsafe: tabs.some((t) => /^(javascript|file):/.test(t.url)) })'],
+      expect: (v) => v.opened === true && v.extra === 1 && v.unsafe === false },
+    { step: ['main', '(actions["home"](), "home")'] }, { step: ['wait', 400] },
+    { name: 'Home lands on the start page', step: ['main', 'JSON.stringify({ blank: !activeTab().url && !activeTab().view, count: tabs.length })'], expect: (v) => v.blank === true },
+    { step: ['main', '(globalThis.__homeCount = tabs.length, actions["home"](), "again")'] }, { step: ['wait', 300] },
+    { name: 'Home does not pile up extra tabs', step: ['main', 'tabs.length === globalThis.__homeCount'], expect: (v) => v === true },
+    { name: 'asking for the default browser in a development build changes nothing', step: ['main', '(() => { const before = checkDefaultBrowser(); makeDefaultBrowser(); return checkDefaultBrowser() === before; })()'], expect: (v) => v === true },
+
+    // sleeping tabs give their memory back and wake up when clicked
+    { step: ['main', '(globalThis.__memBefore = app.getAppMetrics().filter((p) => p.type === "Tab").reduce((n, p) => n + p.memory.workingSetSize, 0), tabs.filter((t) => t.view).length)'] },
+    { step: ['main', '(globalThis.__slept = sleepTick(0), globalThis.__slept)'] }, { step: ['wait', 1500] },
+    { name: 'inactive tabs go to sleep and keep their address', step: ['main', 'JSON.stringify({ slept: globalThis.__slept, asleep: tabs.filter((t) => t.sleeping && !t.view && t.url).length })'],
+      expect: (v) => v.slept >= 1 && v.asleep === v.slept },
+    { name: 'sleeping tabs free real memory', step: ['main', 'app.getAppMetrics().filter((p) => p.type === "Tab").reduce((n, p) => n + p.memory.workingSetSize, 0) < globalThis.__memBefore'], expect: (v) => v === true },
+    { step: ['main', '(switchTab(tabs.find((t) => t.sleeping).id), "waking")'] }, { step: ['wait', 2500] },
+    { name: 'a sleeping tab wakes up and reloads when clicked', step: ['main', 'JSON.stringify({ awake: !activeTab().sleeping, hasView: !!activeTab().view })'], expect: (v) => v.awake && v.hasView },
+
+    // the start page: new helpful groups, and MyClient is not a group any more
+    { name: 'the homepage has the new groups and no MyClient group', step: ['main', 'JSON.stringify({ groups: [...new Set(settings.workLinks.map((l) => l.group))], myclientGroup: groups.some((g) => g.name === "MyClient") || settings.workLinks.some((l) => l.group === "MyClient") })'],
+      expect: (v) => ['Platform', 'AI Tools', 'Creative', 'Business', 'Help'].every((g) => v.groups.includes(g)) && v.myclientGroup === false },
+    { step: ['main', '(actions["app.open"]("https://tha-production.com/myclient.html"), "opened")'] }, { step: ['wait', 500] },
+    { name: 'opening MyClient no longer creates a tab group', step: ['main', 'groups.every((g) => g.name !== "MyClient")'], expect: (v) => v === true },
+    { name: 'Automatic effects follow the Mac\'s memory', step: ['main', '(settings.effects = "auto", effectiveEffects() === (os.totalmem() < 9 * 1024 ** 3 ? "reduced" : "full"))'], expect: (v) => v === true },
+
     { step: ['act', 'set', 'effects', 'reduced'] }, { step: ['wait', 400] },
     { name: 'Glass effects: Reduced switches the blur off', step: ['js', 'document.body.classList.contains("low-fx")'], expect: (v) => v === true },
     { step: ['act', 'set', 'effects', 'full'] }, { step: ['wait', 400] },
