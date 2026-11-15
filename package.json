@@ -1,7 +1,7 @@
 {
   "name": "thanary",
   "productName": "Thanary",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "A simple web browser built on Electron (Chromium).",
   "author": "Thanary",
   "repository": {
@@ -36,7 +36,10 @@
         "CFBundleURLTypes": [
           {
             "CFBundleURLName": "Web site address",
-            "CFBundleURLSchemes": ["http", "https"],
+            "CFBundleURLSchemes": [
+              "http",
+              "https"
+            ],
             "CFBundleTypeRole": "Viewer"
           }
         ],
@@ -45,7 +48,10 @@
             "CFBundleTypeName": "HTML document",
             "CFBundleTypeRole": "Viewer",
             "LSHandlerRank": "Alternate",
-            "LSItemContentTypes": ["public.html", "public.xhtml"]
+            "LSItemContentTypes": [
+              "public.html",
+              "public.xhtml"
+            ]
           }
         ]
       },
