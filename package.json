@@ -1,7 +1,7 @@
 {
   "name": "thanary",
   "productName": "Thanary",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A simple web browser built on Electron (Chromium).",
   "author": "Thanary",
   "repository": {
@@ -28,6 +28,8 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "identity": "-",
+      "hardenedRuntime": false,
       "target": [
         "dmg",
         "zip"

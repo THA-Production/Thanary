@@ -30,5 +30,7 @@ jobs:
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Mac signing is skipped until Apple certificate secrets are added (see README).
+          # No Apple certificate yet, so don't search the keychain for one. The app is
+          # still ad-hoc signed (mac.identity "-" in package.json): an unsigned bundle
+          # shows up as "damaged" on Apple Silicon once it has been downloaded.
           CSC_IDENTITY_AUTO_DISCOVERY: false
