@@ -3,6 +3,19 @@
 // ICONS in renderer.js.
 window.CHANGELOG = [
   {
+    version: '0.5.0',
+    items: [
+      { icon: 'sparkle', title: 'Liquid Glass design', text: 'Frosted, softly lit surfaces and springy motion across the app. Settings, the palette and other sheets glass over a blurred view of your page. Prefer it lighter? Settings > General > Glass effects > Reduced.' },
+      { icon: 'tabs', title: 'Pinned tabs', text: 'Right-click a tab and choose Pin Tab. Pinned tabs shrink to just their icon, always sit first in their group, and survive restarts and “Close Other Tabs”.' },
+      { icon: 'shield', title: 'Friendly error pages', text: 'If a page can’t load (offline, wrong address, an untrusted certificate) you now get a clear message and a Try Again button, and it retries by itself when you’re back online.' },
+      { icon: 'bolt', title: 'Crash recovery', text: 'If a page crashes, Thanary reloads it automatically. If it keeps crashing, it stops and tells you instead of looping.' },
+      { icon: 'bolt', title: 'Command palette', text: 'Press ⌘K to jump to any tab, link, bookmark or page in your history, or run a command such as New Private Group, Settings or Ask AI.' },
+      { icon: 'download', title: 'Downloads', text: 'Files now save to your Downloads folder with a progress panel in the toolbar. Open them, show them in Finder, or clear the list.' },
+      { icon: 'shield', title: 'Permission prompts', text: 'Websites now ask before using your camera, microphone, location or notifications. Remember a choice per site, and revoke it in Settings > Privacy.' },
+      { icon: 'tabs', title: 'Reopen closed tab, Print, PDF', text: '⇧⌘T brings back the last tab you closed. ⌘P prints, and File > Export as PDF saves the page as a PDF.' },
+    ],
+  },
+  {
     version: '0.4.0',
     items: [
       { icon: 'home', title: 'A new start page', text: 'A black, portal-style home with your THA links, colorful tiles, a search box with often-visited sites, and a feed of recent pages, favorites and your reading list.' },

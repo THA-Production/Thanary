@@ -1,7 +1,8 @@
-// Generates the Thanary favicon set (macOS only). Run with:
+// Generates the Thanary favicon set and app icon (macOS only). Run with:
 //   swift scripts/make-favicon.swift
 //
-//   renderer/assets/favicon-*.png   used by the browser UI (Start Page tab, tab overview)
+//   build/icon.png                  1024 px app icon (Dock, Finder); electron-builder makes .icns/.ico from it
+//   renderer/assets/favicon-*.png   used by the browser UI (Start Page tab, tab overview, About)
 //   build/favicon/                  the same PNGs plus favicon.ico and favicon.svg for a website
 //
 // Design: a bold italic T, slanted like the THA wordmark, followed by a blue square (a full
@@ -19,10 +20,12 @@ func slant(_ x: Double, _ y: Double) -> (Double, Double) { (x + (80 - y) * 0.2 -
 let tShape: [(Double, Double)] = [(22, 22), (80, 22), (80, 37), (57, 37), (57, 80), (41, 80), (41, 37), (22, 37)]
 let dotShape: [(Double, Double)] = [(71, 66), (87, 66), (87, 80), (71, 80)]
 
-func points(_ shape: [(Double, Double)], scale: Double, height: Double) -> [CGPoint] {
+// Maps the 100 x 100 design box onto a square of `scale * 100` points whose lower-left corner
+// is (originX, originY). CoreGraphics y points up, so y is flipped.
+func points(_ shape: [(Double, Double)], scale: Double, height: Double, originX: Double = 0, originY: Double = 0) -> [CGPoint] {
     shape.map { p in
         let q = slant(p.0, p.1)
-        return CGPoint(x: q.0 * scale, y: height - q.1 * scale) // flip: CoreGraphics y points up
+        return CGPoint(x: originX + q.0 * scale, y: originY + height - q.1 * scale)
     }
 }
 
@@ -42,6 +45,31 @@ func render(_ size: Int) -> Data {
 
     func fill(_ shape: [(Double, Double)], _ c: CGColor) {
         let pts = points(shape, scale: s / 100, height: s)
+        ctx.beginPath()
+        ctx.move(to: pts[0])
+        for p in pts.dropFirst() { ctx.addLine(to: p) }
+        ctx.closePath()
+        ctx.setFillColor(c)
+        ctx.fillPath()
+    }
+    fill(tShape, CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    fill(dotShape, CGColor(red: accent.r, green: accent.g, blue: accent.b, alpha: 1))
+    return NSBitmapImageRep(cgImage: ctx.makeImage()!).representation(using: .png, properties: [:])!
+}
+
+// App icon: the same mark on a macOS-style rounded square with the usual transparent margin.
+func renderAppIcon() -> Data {
+    let ctx = CGContext(data: nil, width: 1024, height: 1024, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.interpolationQuality = .high
+    let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
+    ctx.addPath(CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil))
+    ctx.clip()
+    ctx.setFillColor(CGColor(red: background.r, green: background.g, blue: background.b, alpha: 1))
+    ctx.fill(tile)
+    func fill(_ shape: [(Double, Double)], _ c: CGColor) {
+        let pts = points(shape, scale: 8.24, height: 824, originX: 100, originY: 100)
         ctx.beginPath()
         ctx.move(to: pts[0])
         for p in pts.dropFirst() { ctx.addLine(to: p) }
@@ -76,6 +104,7 @@ for (size, png) in icoImages {
 }
 for (_, png) in icoImages { ico.append(png) }
 try! ico.write(to: root.appendingPathComponent("build/favicon/favicon.ico"))
+try! renderAppIcon().write(to: root.appendingPathComponent("build/icon.png"))
 
 // The same design as a vector, for websites.
 func svgPath(_ shape: [(Double, Double)]) -> String {
@@ -92,4 +121,4 @@ let svg = """
 </svg>
 """
 try! svg.write(to: root.appendingPathComponent("build/favicon/favicon.svg"), atomically: true, encoding: .utf8)
-print("Wrote favicons to renderer/assets and build/favicon")
+print("Wrote the app icon and favicons")

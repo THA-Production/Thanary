@@ -10,10 +10,24 @@ permissions:
   contents: write # needed to create the GitHub Release and upload installers
 
 jobs:
+  # Start the real app and check its main features. If anything fails, nothing is released.
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   # Create the GitHub Release once, up front. Without this the Mac and Windows
   # jobs each create their own release for the same tag at the same moment,
   # which leaves two releases with half the installers in each.
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "${TAG#v}" --generate-notes

@@ -1,0 +1,25 @@
+name: Test
+
+# Runs the smoke test on every push to main and on every pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Starts the real app with a throw-away profile and checks pages, tabs, downloads,
+      # Auto-Login, private groups, error pages and more (see scripts/smoke-test.js).
+      - run: npm test

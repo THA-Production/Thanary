@@ -31,6 +31,12 @@ const ICONS = {
   sparkle: svg('<path d="M11 4.5 12.8 9.2 17.5 11l-4.7 1.8L11 17.5l-1.8-4.7L4.5 11l4.7-1.8L11 4.5z"/><path d="M18.5 15.5v4M16.5 17.5h4"/>'),
   refresh: svg('<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19.5 4v4.5H15"/>'),
   bolt: svg('<path d="M13 3.5 6 13h5l-1 7.5L18 11h-5.2L13 3.5z"/>'),
+  download: svg('<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>'),
+  file: svg('<path d="M7 3.5h6.5L18 8v12.5H7z"/><path d="M13.5 3.5V8H18"/>'),
+  checkCircle: svg('<circle cx="12" cy="12" r="8.5"/><path d="m8.2 12.4 2.6 2.6 5-5.4"/>'),
+  arrowDownCircle: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 8v7.5M8.7 12.3l3.3 3.3 3.3-3.3"/>'),
+  info: svg('<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5M12 8h.01"/>'),
+  warn: svg('<path d="M12 4.5 20.5 19h-17z"/><path d="M12 10v4M12 16.6h.01"/>'),
   folder: svg('<path d="M4 7.5A1.5 1.5 0 0 1 5.5 6H10l2 2.5h6.5A1.5 1.5 0 0 1 20 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/>'),
   tag: svg('<path d="M4.5 11.2V5.5a1 1 0 0 1 1-1h5.7l8 8a1.4 1.4 0 0 1 0 2l-4.7 4.7a1.4 1.4 0 0 1-2 0z"/><circle cx="8.5" cy="8.5" r="1.2"/>'),
   users: svg('<circle cx="9" cy="9" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M15.5 6.2a3 3 0 0 1 0 5.6M17 14.2a5.5 5.5 0 0 1 3.5 4.8"/>'),
@@ -146,11 +152,12 @@ const page = $('page');
 
 const activeTab = () => (state ? state.tabs.find((t) => t.id === state.activeId) : null) || null;
 
+let overlayHold = false; // keeps the interface above the page while a sheet plays its closing animation
 function syncOverlay() {
-  const want = overviewOpen || suggestOpen || !!modal;
+  const want = overviewOpen || suggestOpen || !!modal || overlayHold;
   if (want === overlaySent) return;
   overlaySent = want;
-  act('ui.overlay', want);
+  act('ui.overlay', want, want && !!modal && modal !== 'downloads'); // a page snapshot for the glass, except for the popover
 }
 
 // Tell the main process where the web page area starts. Resizing a live web page on every
@@ -216,7 +223,10 @@ function makeTabEl(id) {
     if (event.target.closest('.tab-close')) act('tab.close', id);
     else act('tab.switch', id);
   });
-  tab.addEventListener('auxclick', (event) => { if (event.button === 1) act('tab.close', id); });
+  tab.addEventListener('auxclick', (event) => {
+    const current = state.tabs.find((t) => t.id === id);
+    if (event.button === 1 && !(current && current.pinned)) act('tab.close', id); // pinned tabs ignore a stray middle-click
+  });
   tab.addEventListener('contextmenu', (event) => { event.preventDefault(); act('tab.menu', id); });
 
   tab.addEventListener('dragstart', (event) => {
@@ -252,6 +262,7 @@ function clearDropMarks() {
 
 function updateTabEl(node, tab) {
   node.classList.toggle('active', tab.id === state.activeId);
+  node.classList.toggle('pinned', !!tab.pinned);
   node.setAttribute('aria-selected', String(tab.id === state.activeId));
   const title = tab.title || (tab.url ? hostOf(tab.url) || tab.url : 'Start Page');
   const titleEl = node.querySelector('.tab-title');
@@ -723,31 +734,11 @@ function renderStart() {
   const name = state && state.settings.userName;
   $('greeting').textContent = name ? `${hello}, ${name}` : 'Hello there';
   $('subgreeting').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  $('who').textContent = name || 'THA';
-  $('avatar').textContent = (name || 'THA').trim()[0].toUpperCase();
   $('start-input').placeholder = `Search ${state ? state.searchName : 'the web'} or enter a website name`;
 
   const links = (state && state.settings.workLinks) || [];
   const groups = [...new Set(links.map((l) => l.group))];
   if (linkFilter !== 'all' && !groups.includes(linkFilter)) linkFilter = 'all';
-
-  // small links across the top
-  const top = $('top-links');
-  top.textContent = '';
-  for (const link of links.filter((l) => l.group === groups[0]).slice(0, 5)) {
-    const a = el('button', 'top-link', link.title);
-    a.addEventListener('click', (event) => openLink(link, event));
-    top.append(a);
-  }
-
-  // big group tabs
-  const nav = $('portal-nav');
-  nav.textContent = '';
-  for (const key of ['all', ...groups]) {
-    const tab = el('button', 'pnav' + (key === linkFilter ? ' active' : ''), key === 'all' ? 'Home' : key);
-    tab.addEventListener('click', () => { linkFilter = key; renderStart(); });
-    nav.append(tab);
-  }
 
   // link card: one column per group, or one group spread over several columns
   const box = $('portal-links');
@@ -1069,8 +1060,26 @@ function debounce(fn, ms) {
   };
 }
 
+let closingTimer = null;
+let closingFocus = false;
+
+// Called when a sheet's closing animation has played: now it can really go away.
+function finishClosing() {
+  clearTimeout(closingTimer);
+  closingTimer = null;
+  for (const name of [...body.classList]) if (name.startsWith('modal-') && name !== 'modal-open') body.classList.remove(name);
+  body.classList.remove('modal-closing');
+  $('backdrop').classList.remove('on');
+  $('backdrop').style.backgroundImage = '';
+  $('backdrop-wrap').style.cssText = '';
+  overlayHold = false;
+  syncOverlay();
+  if (closingFocus) { closingFocus = false; act('focus.page'); }
+}
+
 function openModal(name) {
   if (modal === name) return;
+  if (closingTimer) finishClosing();
   address.blur();
   closeSuggest();
   closeOverview();
@@ -1081,13 +1090,15 @@ function openModal(name) {
   syncOverlay();
 }
 
-function closeModal() {
+function closeModal(restoreFocus = true) {
   if (!modal) return;
-  body.classList.remove('modal-open', modalClass);
+  body.classList.remove('modal-open');
+  body.classList.add('modal-closing'); // the sheet animates out, then finishClosing() removes it
   modal = null;
   modalClass = '';
-  syncOverlay();
-  act('focus.page');
+  overlayHold = true;
+  closingFocus = restoreFocus;
+  closingTimer = setTimeout(finishClosing, 260);
 }
 
 modalEl.addEventListener('mousedown', (event) => { if (event.target === modalEl) closeModal(); });
@@ -1131,6 +1142,7 @@ function renderSettings() {
   if (!state) return;
   const s = state.settings;
   setEngine.value = s.searchEngine;
+  $('set-effects').value = s.effects || 'full';
   $('set-sidebar').checked = !!s.sidebar;
   $('set-favbar').checked = !!s.favBar;
   $('set-adblock').checked = !!s.adblock;
@@ -1143,11 +1155,13 @@ function renderSettings() {
   $('about-engine').textContent = `Chromium ${state.versions.chrome} · Electron ${state.versions.electron}`;
   renderLinksEditor();
   renderLogins();
+  renderPermissions();
   renderAdblock();
   renderUpdate();
 }
 
 setEngine.addEventListener('change', () => act('set', 'searchEngine', setEngine.value));
+$('set-effects').addEventListener('change', (event) => act('set', 'effects', event.target.value));
 $('set-sidebar').addEventListener('change', (event) => act('set', 'sidebar', event.target.checked));
 $('set-favbar').addEventListener('change', (event) => act('set', 'favBar', event.target.checked));
 $('set-adblock').addEventListener('change', (event) => act('set', 'adblock', event.target.checked));
@@ -1233,14 +1247,26 @@ $('shield').addEventListener('click', () => { if (state) act('set', 'adblock', !
 
 // ----- updates -----
 
+// A thin rotating arc on a faint ring, in the style of Apple's activity indicator.
+const SPINNER = '<span class="spin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle class="track" cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 9 9"/></svg></span>';
+const UPDATE_ICONS = { checking: 'spin', downloading: 'spin', restarting: 'spin', uptodate: 'checkCircle', ready: 'arrowDownCircle', blocked: 'info', unavailable: 'info', error: 'warn', idle: 'refresh' };
+
+function renderUpdatePill() {
+  const pill = $('update-pill');
+  pill.hidden = upd.state !== 'ready';
+  pill.title = upd.version ? `Thanary ${upd.version} is ready. Click to restart.` : 'An update is ready';
+}
+
 function renderUpdate() {
   const version = upd.version || '';
+  const progress = typeof upd.progress === 'number' ? upd.progress : null;
   const lines = {
     idle: ['Check whether a newer version is available.', ''],
-    checking: ['Checking for updates…', ''],
+    checking: ['Checking for updates…', 'Looking for a newer version.'],
     uptodate: ['Thanary is up to date.', state ? `Version ${state.version} is the latest.` : ''],
-    downloading: [`Downloading Thanary ${version}…`, 'You can keep browsing.'],
-    ready: [`Thanary ${version} is ready.`, 'Restart to finish updating.'],
+    downloading: [`Downloading Thanary ${version}…`, progress === null ? 'You can keep browsing.' : `${progress}% · you can keep browsing`],
+    ready: [`Thanary ${version} is ready.`, 'Restart when it suits you. It also installs the next time you quit.'],
+    restarting: ['Restarting Thanary…', 'One moment.'],
     blocked: [`Thanary ${version} is available.`, upd.message],
     error: ['Could not check for updates.', upd.message],
     unavailable: ['Updates only work in the installed app.', 'You are running a development build.'],
@@ -1248,11 +1274,28 @@ function renderUpdate() {
   const [line, sub] = lines[upd.state] || lines.idle;
   $('update-line').textContent = line;
   $('update-sub').textContent = sub;
+
+  const box = $('update-icon');
+  if (box.dataset.state !== upd.state) {
+    box.dataset.state = upd.state;
+    box.className = 'update-icon ' + upd.state;
+    const which = UPDATE_ICONS[upd.state] || 'refresh';
+    box.innerHTML = which === 'spin' ? SPINNER : ICONS[which];
+  }
+
+  const bar = $('update-bar');
+  bar.hidden = !(upd.state === 'downloading' && progress !== null);
+  if (!bar.hidden) bar.firstElementChild.style.width = progress + '%';
+
+  const busy = ['checking', 'downloading', 'restarting'].includes(upd.state);
   $('update-restart').hidden = upd.state !== 'ready';
   $('update-download').hidden = upd.state !== 'blocked';
-  $('update-check').disabled = upd.state === 'checking' || upd.state === 'downloading';
+  $('update-check').hidden = upd.state === 'restarting';
+  $('update-check').disabled = busy;
+  renderUpdatePill();
 }
 
+$('update-pill').addEventListener('click', () => openSettings('updates'));
 $('update-check').addEventListener('click', () => act('update.check'));
 $('update-restart').addEventListener('click', () => act('update.restart'));
 $('update-download').addEventListener('click', () => act('update.download'));
@@ -1495,6 +1538,278 @@ function runAIOnSelection(payload) {
   act('ai.ask', aiSeq, [{ role: 'user', content }], false);
 }
 
+// ---------- Downloads ----------
+
+let dls = [];
+
+function fmtBytes(n) {
+  if (!n || n < 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  while (n >= 1024 && i < 3) { n /= 1024; i += 1; }
+  return `${n >= 10 || i === 0 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
+
+function openDownloads() {
+  openModal('downloads');
+  renderDownloads();
+}
+
+function renderDownloads() {
+  const active = dls.filter((d) => d.state === 'progressing' || d.state === 'paused');
+  const button = $('dl-btn');
+  button.hidden = !dls.length;
+  button.classList.toggle('busy', active.length > 0);
+  button.title = active.length ? `Downloading ${active.length} ${active.length === 1 ? 'file' : 'files'}…` : 'Downloads';
+  if (modal !== 'downloads') return;
+
+  const list = $('dl-list');
+  list.textContent = '';
+  if (!dls.length) {
+    list.append(el('p', 'empty', 'Nothing downloaded yet.'));
+    return;
+  }
+  for (const d of dls) {
+    const finished = d.state === 'completed';
+    const row = el('div', 'dl-row' + (finished && !d.missing ? ' done' : ''));
+    row.append(icon('file', 'dl-icon'));
+
+    const info = el('div', 'dl-info');
+    info.append(el('span', 'dl-name', d.name));
+    let status;
+    if (d.state === 'progressing' || d.state === 'paused') {
+      const pct = d.total > 0 ? Math.round((d.received / d.total) * 100) : null;
+      status = d.total > 0 ? `${fmtBytes(d.received)} of ${fmtBytes(d.total)} · ${pct}%` : `${fmtBytes(d.received)}`;
+      if (d.state === 'paused') status += ' · paused';
+    } else if (finished) {
+      status = d.missing ? 'File moved or deleted' : `${fmtBytes(d.total)} · ${ago(d.startedAt)}`;
+    } else if (d.state === 'cancelled') {
+      status = 'Cancelled';
+    } else {
+      status = 'Download failed';
+    }
+    info.append(el('span', 'dl-sub', status));
+    if (d.state === 'progressing' && d.total > 0) {
+      const bar = el('div', 'dl-bar');
+      const fill = el('i');
+      fill.style.width = Math.min(100, (d.received / d.total) * 100) + '%';
+      bar.append(fill);
+      info.append(bar);
+    }
+    row.append(info);
+
+    const buttons = el('div', 'dl-actions');
+    if (finished && !d.missing) {
+      const show = el('button', 'tb small');
+      show.innerHTML = ICONS.folder;
+      show.title = 'Show in Finder';
+      show.addEventListener('click', (event) => { event.stopPropagation(); act('download.show', d.id); });
+      buttons.append(show);
+    }
+    const remove = el('button', 'tb small');
+    remove.innerHTML = ICONS.close;
+    remove.title = d.state === 'progressing' ? 'Cancel download' : 'Remove from list';
+    remove.addEventListener('click', (event) => { event.stopPropagation(); act(d.state === 'progressing' ? 'download.cancel' : 'download.remove', d.id); });
+    buttons.append(remove);
+    row.append(buttons);
+
+    if (finished && !d.missing) row.addEventListener('click', () => act('download.open', d.id));
+    list.append(row);
+  }
+}
+
+$('dl-btn').addEventListener('click', () => (modal === 'downloads' ? closeModal() : openDownloads()));
+$('dl-clear').addEventListener('click', () => act('downloads.clear'));
+
+// ---------- Site permissions list (Settings > Privacy) ----------
+
+let permSig = '';
+
+function renderPermissions() {
+  const sig = JSON.stringify(state.permissions);
+  if (sig === permSig) return;
+  permSig = sig;
+  const list = $('perm-list');
+  list.textContent = '';
+  if (!state.permissions.length) {
+    list.append(el('p', 'empty', 'No saved choices. Websites always ask first.'));
+    return;
+  }
+  for (const p of state.permissions) {
+    const row = el('div', 'login-row');
+    const info = el('div', 'login-info');
+    info.append(el('strong', '', hostOfOrigin(p.origin)), el('span', '', `${p.label}: ${p.decision === 'allow' ? 'Allowed' : 'Blocked'}`));
+    const remove = el('button', 'tb small');
+    remove.innerHTML = ICONS.close;
+    remove.title = 'Forget this choice';
+    remove.addEventListener('click', () => act('permission.remove', p.origin, p.key));
+    row.append(info, remove);
+    list.append(row);
+  }
+}
+
+$('perm-clear').addEventListener('click', () => act('permission.clear'));
+
+// ---------- Command palette (⌘K) ----------
+
+let palData = []; // tabs from every group, sent by the main process
+let palItems = [];
+let palIndex = 0;
+
+function paletteCommands() {
+  const hasPage = !!(activeTab() && activeTab().url);
+  const all = [
+    { title: 'New Tab', hint: '⌘T', run: () => act('tab.new') },
+    { title: 'Reopen Closed Tab', hint: '⇧⌘T', run: () => act('tab.reopen') },
+    { title: 'New Private Tab Group', hint: '⇧⌘N', run: () => act('group.newPrivate') },
+    { title: 'Tab Overview', hint: '⇧⌘\\', run: () => openOverview() },
+    { title: 'Show Downloads', hint: '⇧⌘J', run: () => openDownloads() },
+    { title: 'Ask AI', hint: '⇧⌘A', run: () => openAI() },
+    { title: 'Settings', hint: '⌘,', run: () => openSettings() },
+    { title: 'Auto-Login Settings', run: () => openSettings('logins') },
+    { title: 'Privacy Settings', run: () => openSettings('privacy') },
+    { title: 'Check for Updates', run: () => { openSettings('updates'); act('update.check'); } },
+    { title: 'What’s New', run: () => showWhatsNew({ version: state.version, fresh: false }) },
+    { title: 'Toggle Sidebar', hint: '⇧⌘L', run: () => act('set', 'sidebar', !state.settings.sidebar) },
+    { title: 'Toggle Favorites Bar', hint: '⇧⌘B', run: () => act('set', 'favBar', !state.settings.favBar) },
+    { title: state.settings.adblock ? 'Turn Ad Blocker Off' : 'Turn Ad Blocker On', run: () => act('set', 'adblock', !state.settings.adblock) },
+    { title: 'Show History', hint: '⌘Y', run: () => { act('set', 'sidebar', true); setPane('history'); } },
+    { title: 'Show Bookmarks', run: () => { act('set', 'sidebar', true); setPane('bookmarks'); } },
+    { title: 'Show Reading List', run: () => { act('set', 'sidebar', true); setPane('reading'); } },
+  ];
+  if (hasPage) {
+    const current = activeTab();
+    all.push(
+      { title: current.pinned ? 'Unpin Tab' : 'Pin Tab', run: () => act('tab.pin', current.id, !current.pinned) },
+      { title: 'Find on Page', hint: '⌘F', run: () => openFind() },
+      { title: 'Print…', hint: '⌘P', run: () => act('page.print') },
+      { title: 'Export as PDF…', run: () => act('page.pdf') },
+      { title: 'Developer Tools', hint: '⌥⌘I', run: () => act('dev.inspect') },
+    );
+  }
+  return all;
+}
+
+function palScore(text, query) {
+  const t = text.toLowerCase();
+  let total = 0;
+  for (const token of query.split(/\s+/).filter(Boolean)) {
+    const at = t.indexOf(token);
+    if (at === -1) return 0;
+    total += at === 0 ? 100 : ' ./-'.includes(t[at - 1]) ? 70 : 40;
+  }
+  return total;
+}
+
+function buildPaletteItems(raw) {
+  const query = raw.trim();
+  const q = query.toLowerCase();
+  const pool = [];
+  for (const tab of palData) {
+    pool.push({ kind: 'Tab', title: tab.title || hostOf(tab.url) || 'Start Page', sub: hostOf(tab.url) || tab.group, url: tab.url, boost: 30, run: () => act('tab.switch', tab.id) });
+  }
+  for (const cmd of paletteCommands()) pool.push({ kind: 'Command', title: cmd.title, sub: cmd.hint || '', boost: 20, run: cmd.run });
+  for (const link of state.settings.workLinks) pool.push({ kind: link.group || 'Link', title: link.title, sub: hostOf(link.url), url: link.url, boost: 25, run: () => openLink(link, null) });
+  const seen = new Set();
+  for (const entry of [...lib.bookmarks, ...lib.history.slice(0, 150)]) {
+    if (seen.has(entry.url)) continue;
+    seen.add(entry.url);
+    pool.push({ kind: 'Page', title: entry.title || hostOf(entry.url), sub: hostOf(entry.url), url: entry.url, favicon: entry.favicon, boost: 0, run: () => act('nav.open', entry.url, false) });
+  }
+
+  let items;
+  if (!q) {
+    items = [...pool.filter((p) => p.kind === 'Tab').slice(0, 5), ...pool.filter((p) => p.kind === 'Command').slice(0, 7), ...pool.filter((p) => p.boost === 25).slice(0, 3)];
+  } else {
+    items = pool
+      .map((p) => ({ ...p, score: palScore(`${p.title} ${p.sub}`, q) }))
+      .filter((p) => p.score > 0)
+      .sort((a, b) => b.score + b.boost - (a.score + a.boost))
+      .slice(0, 8);
+    const go = { kind: looksLikeURL(query) ? 'Go' : 'Search', title: looksLikeURL(query) ? `Go to ${query}` : `Search ${state.searchName} for “${query}”`, sub: '', run: () => act('nav.go', query) };
+    if (looksLikeURL(query)) items.unshift(go);
+    else items.push(go);
+  }
+  return items;
+}
+
+function renderPalette() {
+  palItems = buildPaletteItems($('pal-input').value);
+  if (palIndex >= palItems.length) palIndex = Math.max(0, palItems.length - 1);
+  const list = $('pal-list');
+  list.textContent = '';
+  palItems.forEach((item, index) => {
+    const row = el('button', 'pal-row' + (index === palIndex ? ' selected' : ''));
+    row.setAttribute('role', 'option');
+    if (item.kind === 'Command') row.append(icon('bolt', 'pal-ico'));
+    else if (item.kind === 'Search' || item.kind === 'Go') row.append(icon(item.kind === 'Go' ? 'globe' : 'search', 'pal-ico'));
+    else row.append(siteIcon(item.favicon, item.url || '', 'small'));
+    row.append(el('span', 'pal-title', item.title), el('span', 'pal-sub', item.sub), el('span', 'pal-kind', item.kind));
+    row.addEventListener('mousemove', () => { if (palIndex !== index) { palIndex = index; paintPaletteSelection(); } });
+    row.addEventListener('click', () => runPaletteItem(item));
+    list.append(row);
+  });
+}
+
+function paintPaletteSelection() {
+  [...$('pal-list').children].forEach((row, index) => {
+    row.classList.toggle('selected', index === palIndex);
+    if (index === palIndex) row.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+function runPaletteItem(item) {
+  if (!item) return;
+  closeModal(false);
+  item.run();
+}
+
+function openPalette() {
+  openModal('palette');
+  $('pal-input').value = '';
+  palIndex = 0;
+  act('palette.request');
+  renderPalette();
+  setTimeout(() => $('pal-input').focus(), 40);
+}
+
+$('pal-input').addEventListener('input', () => { palIndex = 0; renderPalette(); });
+$('pal-input').addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (!palItems.length) return;
+    palIndex = (palIndex + (event.key === 'ArrowDown' ? 1 : -1) + palItems.length) % palItems.length;
+    paintPaletteSelection();
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    runPaletteItem(palItems[palIndex]);
+  }
+});
+
+// Ambient animation only runs while the window is in front.
+window.addEventListener('blur', () => body.classList.add('away'));
+window.addEventListener('focus', () => body.classList.remove('away'));
+document.addEventListener('visibilitychange', () => body.classList.toggle('away', document.hidden));
+
+// ---------- Liquid glass lighting ----------
+// The sheets and start-page panels pick up a soft highlight where the pointer is. One listener,
+// at most one update per frame, and only a CSS variable changes.
+let lightFrame = 0;
+let lightEvent = null;
+document.addEventListener('pointermove', (event) => {
+  if (body.classList.contains('low-fx')) return;
+  lightEvent = event;
+  if (lightFrame) return;
+  lightFrame = requestAnimationFrame(() => {
+    lightFrame = 0;
+    const target = lightEvent.target.closest && lightEvent.target.closest('.sheet, .panel');
+    if (!target) return;
+    const rect = target.getBoundingClientRect();
+    target.style.setProperty('--mx', lightEvent.clientX - rect.left + 'px');
+    target.style.setProperty('--my', lightEvent.clientY - rect.top + 'px');
+  });
+}, { passive: true });
+
 // ---------- Updates from the main process ----------
 
 let lastLayoutKey = '';
@@ -1502,6 +1817,7 @@ let lastLayoutKey = '';
 function render() {
   const settings = state.settings;
   body.classList.toggle('sidebar-open', !!settings.sidebar);
+  body.classList.toggle('low-fx', settings.effects === 'reduced');
   body.classList.toggle('favbar-open', !!settings.favBar);
   body.classList.toggle('fullscreen', !!state.fullscreen);
   $('toggle-sidebar').title = settings.sidebar ? 'Hide Sidebar' : 'Show Sidebar';
@@ -1548,7 +1864,13 @@ B.on('library', (next) => {
 
 B.on('update', (next) => {
   upd = next;
+  renderUpdatePill();
   if (modal === 'settings') renderUpdate();
+});
+
+B.on('downloads', (next) => {
+  dls = next || [];
+  renderDownloads();
 });
 
 B.on('adblock', (next) => {
@@ -1583,6 +1905,23 @@ B.on('cmd', (name, payload) => {
     openSettings(payload);
   } else if (name === 'whatsnew') {
     showWhatsNew(payload);
+  } else if (name === 'backdrop') {
+    const backdrop = $('backdrop');
+    if (payload && (modal || overlayHold)) {
+      const rect = $('page').getBoundingClientRect(); // frost only the page area
+      Object.assign($('backdrop-wrap').style, { left: rect.left + 'px', top: rect.top + 'px', width: rect.width + 'px', height: rect.height + 'px' });
+      backdrop.style.backgroundImage = `url(${payload})`;
+      requestAnimationFrame(() => backdrop.classList.add('on'));
+    } else {
+      backdrop.classList.remove('on');
+    }
+  } else if (name === 'palette') {
+    openPalette();
+  } else if (name === 'palette-data') {
+    palData = payload || [];
+    if (modal === 'palette') renderPalette();
+  } else if (name === 'downloads-open') {
+    openDownloads();
   } else if (name === 'ai-run') {
     runAIOnSelection(payload);
   } else if (name === 'login-result') {

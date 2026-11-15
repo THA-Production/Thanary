@@ -64,6 +64,8 @@
         </div>
 
         <div class="tb-side right">
+          <button id="update-pill" class="pill" title="An update is ready" hidden><i data-icon="arrowDownCircle"></i><span>Update</span></button>
+          <button id="dl-btn" class="tb" title="Downloads" aria-label="Downloads" hidden><i data-icon="download"></i></button>
           <button id="shield" class="tb" title="Ad blocker" aria-label="Ad blocker"><i data-icon="shield"></i></button>
           <button id="ai-btn" class="tb" title="Ask AI (⇧⌘A)" aria-label="Ask AI"><i data-icon="sparkle"></i></button>
           <button id="page-menu" class="tb" title="Bookmark or share this page" aria-label="Bookmark or share this page"><i data-icon="share"></i></button>
@@ -102,13 +104,6 @@
 
           <div class="portal" id="portal">
             <div class="portal-wrap">
-              <div class="portal-top reveal">
-                <div id="top-links" class="top-links"></div>
-                <div class="portal-user"><span id="avatar" class="avatar"></span><span id="who"></span></div>
-              </div>
-
-              <nav id="portal-nav" class="portal-nav reveal" aria-label="Link groups"></nav>
-
               <div class="portal-hero reveal">
                 <img class="start-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
                 <div>
@@ -164,6 +159,7 @@
     <div id="suggest" role="listbox"></div>
 
     <div id="modal">
+      <div id="backdrop-wrap" aria-hidden="true"><div id="backdrop"></div></div>
       <!-- ============ Settings ============ -->
       <section id="settings" class="sheet" role="dialog" aria-label="Settings">
         <header class="sheet-head">
@@ -190,6 +186,13 @@
                   <option value="duckduckgo">DuckDuckGo</option>
                   <option value="bing">Bing</option>
                   <option value="brave">Brave Search</option>
+                </select>
+              </div>
+              <div class="set-row">
+                <div class="set-text"><strong>Glass effects</strong><span>Blur and glow. Choose Reduced for the lightest, fastest look.</span></div>
+                <select id="set-effects">
+                  <option value="full">Full</option>
+                  <option value="reduced">Reduced</option>
                 </select>
               </div>
               <div class="set-row">
@@ -234,6 +237,11 @@
               <div class="set-row">
                 <div class="set-text"><strong>Cookies and website data</strong><span>Signs you out of websites. History is kept.</span></div>
                 <button id="set-clear-data" class="btn">Clear Data…</button>
+              </div>
+              <div class="set-block">
+                <div class="set-text"><strong>Site permissions</strong><span>Camera, microphone, location and notifications you allowed or blocked for a website. Websites always ask first.</span></div>
+                <div id="perm-list"></div>
+                <button id="perm-clear" class="btn">Forget All Choices</button>
               </div>
               <div class="set-row">
                 <div class="set-text"><strong>Private tab groups</strong><span>Pages open without saving history, cookies or logins, and everything is erased when the group is closed.</span></div>
@@ -296,15 +304,20 @@
             <div class="set-pane" data-spane="updates">
               <h3>Updates</h3>
               <div class="about">
-                <img class="about-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+                <img class="about-logo" src="assets/favicon-180.png" alt="Thanary">
                 <div>
                   <strong>Thanary</strong>
                   <span id="about-version"></span>
                   <span id="about-engine" class="dim"></span>
                 </div>
               </div>
-              <div class="set-row">
-                <div class="set-text"><strong id="update-line">Not checked yet.</strong><span id="update-sub"></span></div>
+              <div class="set-row update-row">
+                <div id="update-icon" class="update-icon" aria-hidden="true"></div>
+                <div class="set-text grow">
+                  <strong id="update-line">Not checked yet.</strong>
+                  <span id="update-sub"></span>
+                  <div id="update-bar" class="dl-bar" hidden><i></i></div>
+                </div>
                 <div class="inline">
                   <button id="update-restart" class="btn primary" hidden>Restart to Update</button>
                   <button id="update-download" class="btn" hidden>Open Download Page</button>
@@ -322,6 +335,27 @@
             </div>
           </div>
         </div>
+      </section>
+
+      <!-- ============ Downloads ============ -->
+      <section id="downloads" class="sheet" role="dialog" aria-label="Downloads">
+        <header class="sheet-head">
+          <h2><i data-icon="download"></i>Downloads</h2>
+          <div class="inline">
+            <button id="dl-clear" class="text-btn">Clear</button>
+            <button class="tb" data-close aria-label="Close"><i data-icon="close"></i></button>
+          </div>
+        </header>
+        <div id="dl-list" class="dl-list"></div>
+      </section>
+
+      <!-- ============ Command palette ============ -->
+      <section id="palette" class="sheet" role="dialog" aria-label="Command palette">
+        <div class="pal-box">
+          <i data-icon="search"></i>
+          <input id="pal-input" type="text" placeholder="Search tabs, links, history and commands…" autocomplete="off" spellcheck="false">
+        </div>
+        <div id="pal-list" class="pal-list" role="listbox"></div>
       </section>
 
       <!-- ============ Ask AI ============ -->
@@ -346,7 +380,7 @@
       <!-- ============ What's New ============ -->
       <section id="whatsnew" class="sheet" role="dialog" aria-label="What’s new">
         <div class="wn-hero">
-          <img class="wn-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+          <img class="wn-logo" src="assets/favicon-180.png" alt="Thanary">
           <h2 id="wn-title"></h2>
           <span id="wn-version" class="badge"></span>
         </div>

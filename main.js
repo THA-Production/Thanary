@@ -1,4 +1,4 @@
-const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net, safeStorage } = require('electron');
+const { app, BaseWindow, WebContentsView, Menu, ipcMain, session, dialog, clipboard, shell, nativeTheme, net, safeStorage, systemPreferences } = require('electron');
 // electron-updater is large, so it is only loaded when an update check actually runs.
 let updater = null;
 const getUpdater = () => updater || (updater = require('electron-updater').autoUpdater);
@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawn, execFile, execFileSync } = require('child_process');
+const { pathToFileURL } = require('url');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
 const { promisify } = require('util');
@@ -25,6 +26,8 @@ const isSearchURL = (url) => Object.values(ENGINES).some((e) => url.startsWith(e
 const DEFAULT_GROUP = 'default';
 const HISTORY_LIMIT = 3000;
 const isMac = process.platform === 'darwin';
+const ERROR_PAGE = path.join(__dirname, 'renderer', 'error.html');
+const ERROR_PAGE_URL = pathToFileURL(ERROR_PAGE).href;
 
 let win = null;
 let ui = null; // one WebContentsView that draws all browser chrome (toolbar, sidebar, start page)
@@ -64,12 +67,14 @@ let settings = {
   adblock: true,
   autoUpdate: true,
   autoLogin: true,
+  effects: 'full', // 'reduced' turns off the blur and ambient glow
   linksVersion: 2,
   searchEngine: 'google',
   userName: null, // null = not chosen yet; filled from the Mac's user name on first launch
   defaultGroupName: 'Tabs',
   aiModel: 'openai/gpt-4.1-mini',
   lastVersion: '', // the version whose "What's New" has been shown
+  sitePermissions: {}, // origin -> { camera: 'allow' | 'deny', ... }
   workLinks: DEFAULT_WORK_LINKS.map((l) => ({ ...l })),
 };
 let freshProfile = false; // true when there was no saved state at all (first ever launch)
@@ -113,6 +118,8 @@ function loadStore() {
     settings.workLinks = cleanLinks(settings.workLinks);
   }
   if (!ENGINES[settings.searchEngine]) settings.searchEngine = 'google';
+  settings.sitePermissions = cleanPermissions(settings.sitePermissions);
+  downloads = list(data.downloads).filter((d) => d && typeof d.id === 'string' && typeof d.path === 'string' && d.state === 'completed').slice(0, 50);
   const savedGroups = list(data.groups).filter((g) => g && typeof g.id === 'string' && g.id !== DEFAULT_GROUP);
   groups = [{ id: DEFAULT_GROUP, name: '' }, ...savedGroups.map((g) => ({ id: g.id, name: String(g.name || 'Untitled') }))];
   for (const saved of list(data.tabs)) {
@@ -120,8 +127,10 @@ function loadStore() {
     const tab = makeTab(saved.groupId, isWebURL(saved.url) ? saved.url : '');
     tab.title = String(saved.title || '');
     tab.favicon = typeof saved.favicon === 'string' ? saved.favicon : null;
+    tab.pinned = !!saved.pinned && isWebURL(tab.url);
     if (saved.active) activeByGroup[saved.groupId] = tab.id;
   }
+  for (const g of groups) normalizePins(g.id);
   if (groups.some((g) => g.id === data.activeGroupId)) activeGroupId = data.activeGroupId;
 }
 
@@ -140,10 +149,11 @@ function writeState(sync) {
     activeGroupId: isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId,
     tabs: tabs
       .filter((t) => !isPrivateGroup(t.groupId)) // private tabs are never written to disk
-      .map((t) => ({ groupId: t.groupId, url: t.url, title: t.title, favicon: slimIcon(t.favicon), active: activeByGroup[t.groupId] === t.id })),
+      .map((t) => ({ groupId: t.groupId, url: t.failedUrl || t.url, title: t.title, favicon: slimIcon(t.favicon), pinned: !!t.pinned, active: activeByGroup[t.groupId] === t.id })),
     bookmarks,
     readingList,
     history: history.map((h) => ({ ...h, favicon: slimIcon(h.favicon) })),
+    downloads: downloads.filter((d) => !d.priv && d.state === 'completed').slice(0, 50).map(({ priv, ...d }) => d),
     settings,
   });
   const file = storeFile();
@@ -275,7 +285,7 @@ function push() {
   send('state', {
     tabs: tabs
       .filter((t) => t.groupId === activeGroupId)
-      .map(({ id, title, url, loading, favicon }) => ({ id, title, url, loading, favicon })),
+      .map(({ id, title, url, loading, favicon, pinned }) => ({ id, title, url, loading, favicon, pinned: !!pinned })),
     activeId: active ? active.id : null,
     groups: groups.map((g) => ({ id: g.id, name: groupName(g), private: !!g.private, count: tabs.filter((t) => t.groupId === g.id).length })),
     activeGroupId,
@@ -288,6 +298,7 @@ function push() {
     versions: { electron: process.versions.electron, chrome: process.versions.chrome },
     aiTokenSaved,
     logins: vaultList(),
+    permissions: permissionList(),
   });
 }
 
@@ -366,7 +377,7 @@ function openURL(url, newTab) {
 // ---------- Tabs ----------
 
 function makeTab(groupId, url) {
-  const tab = { id: nextId++, groupId, url: url || '', title: '', favicon: null, loading: false, view: null, thumb: null };
+  const tab = { id: nextId++, groupId, url: url || '', title: '', favicon: null, loading: false, view: null, thumb: null, pinned: false };
   tabs.push(tab);
   return tab;
 }
@@ -422,6 +433,8 @@ function ensureView(tab) {
     setTimeout(() => captureThumb(tab), 1500);
   });
   wc.on('did-navigate', (_e, url) => {
+    if (url.startsWith(ERROR_PAGE_URL)) { pushSoon(); return; } // keep the address of the page that failed
+    tab.failedUrl = null;
     tab.url = url;
     tab.favicon = null;
     addHistory(tab);
@@ -438,6 +451,14 @@ function ensureView(tab) {
   wc.on('leave-html-full-screen', () => { htmlFullscreen = false; applyZ(); layout(); });
   wc.on('context-menu', (_e, params) => pageContextMenu(tab, params));
   wc.on('dom-ready', () => autofillFor(tab));
+  wc.on('did-fail-load', (_e, code, description, validatedURL, isMainFrame) => {
+    // -3 means the load was simply cancelled (a download, or a newer navigation).
+    if (!isMainFrame || code === -3 || validatedURL.startsWith(ERROR_PAGE_URL) || !isWebURL(validatedURL)) return;
+    showErrorPage(tab, { kind: errorKind(code), url: validatedURL, code, detail: description });
+  });
+  wc.on('render-process-gone', (_e, details) => {
+    if (details.reason !== 'clean-exit') recoverFromCrash(tab, details.reason);
+  });
   return view;
 }
 
@@ -471,6 +492,7 @@ function switchTab(id) {
   activeGroupId = tab.groupId;
   activeByGroup[tab.groupId] = tab.id;
   if (tab.url && !tab.view) loadTab(tab, tab.url); // restored tabs load the first time they're shown
+  else if (tab.needsReload) { tab.needsReload = false; loadTab(tab, tab.failedUrl || tab.url); } // it crashed while hidden
   updateVisibility();
   if (tab.view) tab.view.webContents.focus();
   else if (ui) ui.webContents.focus();
@@ -511,6 +533,7 @@ function closeTab(id) {
   if (!tab || !win) return;
   const siblings = tabs.filter((t) => t.groupId === tab.groupId);
   const index = siblings.indexOf(tab);
+  rememberClosedTab(tab);
   destroyTab(tab);
   if (activeByGroup[tab.groupId] !== id) { push(); save(); return; }
   const next = siblings[index + 1] || siblings[index - 1];
@@ -533,6 +556,7 @@ function moveTab(id, beforeId) {
   const index = beforeId == null ? -1 : tabs.findIndex((t) => t.id === beforeId);
   if (index === -1) tabs.push(tab);
   else tabs.splice(index, 0, tab);
+  normalizePins(tab.groupId);
   push();
   save();
 }
@@ -546,6 +570,8 @@ function moveTabToGroup(id, groupId) {
   tab.groupId = groupId;
   tabs = tabs.filter((t) => t !== tab);
   tabs.push(tab);
+  normalizePins(groupId);
+  normalizePins(from);
   if (!activeByGroup[groupId]) activeByGroup[groupId] = tab.id;
   if (activeByGroup[from] === id) {
     if (siblings.length) activeByGroup[from] = siblings[0].id;
@@ -607,14 +633,15 @@ function tabMenu(id) {
     { label: 'Close Tab', click: () => closeTab(id) },
     {
       label: 'Close Other Tabs',
-      enabled: tabs.some((t) => t.groupId === tab.groupId && t !== tab),
+      enabled: tabs.some((t) => t.groupId === tab.groupId && t !== tab && !t.pinned),
       click: () => {
-        for (const t of tabs.filter((t) => t.groupId === tab.groupId && t !== tab)) destroyTab(t);
+        for (const t of tabs.filter((t) => t.groupId === tab.groupId && t !== tab && !t.pinned)) destroyTab(t); // pinned tabs stay
         switchTab(id);
       },
     },
     { type: 'separator' },
     { label: 'Duplicate Tab', enabled: isWebURL(tab.url), click: () => createTab(tab.url) },
+    { label: tab.pinned ? 'Unpin Tab' : 'Pin Tab', enabled: !!tab.pinned || isWebURL(tab.failedUrl || tab.url), click: () => setPinned(id, !tab.pinned) },
     {
       label: 'Move to Tab Group',
       submenu: [
@@ -772,6 +799,7 @@ const SETTING_RULES = {
   adblock: (v) => !!v,
   autoUpdate: (v) => !!v,
   autoLogin: (v) => !!v,
+  effects: (v) => (v === 'reduced' ? 'reduced' : 'full'),
   searchEngine: (v) => (ENGINES[v] ? v : 'google'),
   userName: (v) => String(v == null ? '' : v).trim().slice(0, 40),
   aiModel: (v) => (/^[\w.\-\/]{2,80}$/.test(String(v || '').trim()) ? String(v).trim() : 'openai/gpt-4.1-mini'),
@@ -815,7 +843,16 @@ function createWindow() {
   ui.setBackgroundColor('#00000000');
   win.contentView.addChildView(ui);
   ui.webContents.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-  ui.webContents.on('did-finish-load', () => { push(); pushLibrary(); send('update', updateStatus); sendAdStatus(); announceVersion(); });
+  ui.webContents.on('did-finish-load', () => { push(); pushLibrary(); send('update', updateStatus); sendAdStatus(); sendDownloads(); announceVersion(); });
+  // If the interface process ever dies, bring it straight back (but not in an endless loop).
+  let uiCrashes = [];
+  ui.webContents.on('render-process-gone', (_e, details) => {
+    if (details.reason === 'clean-exit') return;
+    const now = Date.now();
+    uiCrashes = uiCrashes.filter((t) => now - t < 60000);
+    uiCrashes.push(now);
+    if (uiCrashes.length <= 3 && ui && !ui.webContents.isDestroyed()) ui.webContents.reload();
+  });
   // The chrome page never navigates anywhere else.
   ui.webContents.on('will-navigate', (event) => event.preventDefault());
   ui.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -848,7 +885,12 @@ function createWindow() {
 const withWC = (fn) => () => { const wc = activeWC(); if (wc) fn(wc); };
 const goBack = withWC((wc) => { if (wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack(); });
 const goForward = withWC((wc) => { if (wc.navigationHistory.canGoForward()) wc.navigationHistory.goForward(); });
-const reload = withWC((wc) => wc.reload());
+const reload = () => {
+  const tab = activeTab();
+  if (!tab || !tab.view) return;
+  if (tab.failedUrl) loadTab(tab, tab.failedUrl);
+  else tab.view.webContents.reload();
+};
 
 const actions = {
   'tab.new': () => { createTab(null); focusAddress(); },
@@ -886,12 +928,32 @@ const actions = {
   ]),
   'settings.open': (pane) => send('cmd', 'settings', pane || 'general'),
   'update.check': () => checkForUpdates(true),
-  'update.restart': () => installUpdate(),
+  'update.restart': () => restartToUpdate(),
   'update.download': () => shell.openExternal(`${RELEASES_URL}/latest`),
   'whatsnew.open': () => send('cmd', 'whatsnew', { version: app.getVersion(), fresh: false }),
   'work.save': (links) => { settings.workLinks = cleanLinks(links); save(); push(); },
   'privacy.clear': () => clearSiteData(),
   'app.open': (url, groupName) => openApp(url, groupName),
+  'tab.reopen': () => reopenClosedTab(),
+  'tab.pin': (id, pinned) => setPinned(id, !!pinned),
+  'page.print': () => printPage(),
+  'page.pdf': () => { savePDF().catch((error) => console.error('PDF export failed:', error.message)); },
+  'dev.inspect': withWC((wc) => wc.toggleDevTools()),
+  'palette.request': () => sendPaletteData(),
+  'download.open': (id) => downloadAction(id, 'open'),
+  'download.show': (id) => downloadAction(id, 'show'),
+  'download.cancel': (id) => downloadAction(id, 'cancel'),
+  'download.remove': (id) => downloadAction(id, 'remove'),
+  'downloads.clear': () => clearDownloads(),
+  'permission.remove': (origin, key) => {
+    const perms = settings.sitePermissions[origin];
+    if (!perms) return;
+    delete perms[key];
+    if (!Object.keys(perms).length) delete settings.sitePermissions[origin];
+    save();
+    push();
+  },
+  'permission.clear': () => { settings.sitePermissions = {}; save(); push(); },
   'login.save': (data) => { const result = saveLogin(data || {}); push(); send('cmd', 'login-result', result); },
   'login.update': (id, patch) => {
     const login = vault.find((v) => v.id === id);
@@ -924,7 +986,12 @@ const actions = {
     insets = { left: next.left, top: next.top };
     layout();
   },
-  'ui.overlay': (on) => { overlay = !!on; applyZ(); if (overlay && ui) ui.webContents.focus(); },
+  'ui.overlay': (on, wantBackdrop) => {
+    overlay = !!on;
+    applyZ();
+    if (overlay && ui) ui.webContents.focus();
+    if (overlay && wantBackdrop) captureBackdrop();
+  },
   'overview.request': async () => {
     const active = activeTab();
     if (active) await captureThumb(active, true);
@@ -972,9 +1039,10 @@ function clearPrivateData() {
 }
 
 function configureSession(ses) {
-  // Websites must not get camera, location, etc. without us adding a prompt later.
-  const allowed = new Set(['fullscreen', 'clipboard-sanitized-write']);
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.has(permission)));
+  // Camera, microphone, location and notifications need the user's OK (see handlePermissionRequest).
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => handlePermissionRequest(ses, wc, permission, callback, details));
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => handlePermissionCheck(ses, permission, requestingOrigin, details));
+  watchDownloads(ses);
   // Sites such as Google and YouTube serve slower fallback pages, or refuse sign-in, when the
   // user agent says "Electron". Identify as plain Chrome instead.
   ses.setUserAgent(ses.getUserAgent().replace(/\s(?:Electron|Thanary)\/\S+/gi, ''));
@@ -1247,6 +1315,338 @@ async function askAI(id, history, includePage) {
   }
 }
 
+// ---------- Error pages, crash recovery ----------
+
+// Maps Chromium's network error numbers to the few kinds of message the error page can show.
+function errorKind(code) {
+  if (code === -106) return 'offline';
+  if (code === -105 || code === -137) return 'dns';
+  if (code <= -200 && code > -300) return 'cert';
+  if ([-100, -101, -102, -104, -109, -111, -118, -7, -324].includes(code)) return 'server';
+  if (code === -310) return 'redirects';
+  return 'generic';
+}
+
+function showErrorPage(tab, info) {
+  if (!tab.view || tab.view.webContents.isDestroyed()) return;
+  tab.failedUrl = info.url; // the address bar and Reload keep pointing at the page that failed
+  tab.view.webContents
+    .loadFile(ERROR_PAGE, { query: { kind: info.kind, url: info.url, code: String(info.code == null ? '' : info.code), detail: String(info.detail || '').slice(0, 200) } })
+    .catch(() => {});
+}
+
+// A page's renderer process died. The first time, reload it; if it dies again within a minute,
+// stop and show an error page instead of looping.
+function recoverFromCrash(tab, reason) {
+  const url = tab.failedUrl || tab.url;
+  if (!isWebURL(url)) return;
+  const now = Date.now();
+  tab.crashes = (tab.crashes || []).filter((t) => now - t < 60000);
+  tab.crashes.push(now);
+  if (tab.crashes.length > 1) {
+    showErrorPage(tab, { kind: 'crashed', url, code: '', detail: reason });
+  } else if (tab.id === activeTabId()) {
+    loadTab(tab, url);
+  } else {
+    tab.needsReload = true; // reloaded when the user comes back to it
+  }
+}
+
+// ---------- Pinned tabs ----------
+
+// Pinned tabs always sit first in their group; everything else keeps its order.
+function normalizePins(groupId) {
+  const slots = [];
+  tabs.forEach((t, i) => { if (t.groupId === groupId) slots.push(i); });
+  const ordered = slots.map((i) => tabs[i]).sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)); // stable
+  slots.forEach((slot, k) => { tabs[slot] = ordered[k]; });
+}
+
+function setPinned(id, pinned) {
+  const tab = tabs.find((t) => t.id === id);
+  if (!tab || !!tab.pinned === !!pinned) return;
+  if (pinned && !isWebURL(tab.failedUrl || tab.url)) return; // only real pages can be pinned
+  tab.pinned = !!pinned;
+  normalizePins(tab.groupId);
+  push();
+  save();
+}
+
+// ---------- Site permissions (camera, microphone, location, notifications) ----------
+// A site must ask, and you decide. "Remember" stores the answer per website in Settings >
+// Privacy, where it can be revoked. Private tab groups only remember for the current session.
+
+const ALWAYS_ALLOWED = new Set(['fullscreen', 'clipboard-sanitized-write', 'pointerLock']);
+const ASKABLE = new Set(['media', 'geolocation', 'notifications', 'clipboard-read']);
+const PERMISSION_ACTIONS = {
+  camera: 'use your camera',
+  microphone: 'use your microphone',
+  geolocation: 'see your location',
+  notifications: 'show notifications',
+  'clipboard-read': 'read your clipboard',
+};
+const PERMISSION_LABELS = { camera: 'Camera', microphone: 'Microphone', geolocation: 'Location', notifications: 'Notifications', 'clipboard-read': 'Clipboard' };
+const privatePermissions = {}; // origin -> { permission: 'allow' | 'deny' }, memory only
+const pendingPrompts = new Map(); // "origin|keys" -> callbacks waiting for the same answer
+
+const secureOrigin = (origin) => /^https:\/\//.test(origin) || /^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin);
+
+function permissionKeys(permission, mediaTypes) {
+  if (permission !== 'media') return [permission];
+  const keys = [];
+  if (mediaTypes.includes('video')) keys.push('camera');
+  if (mediaTypes.includes('audio')) keys.push('microphone');
+  return keys.length ? keys : ['camera', 'microphone'];
+}
+
+const permissionStore = (ses) => (ses === privateSes ? privatePermissions : settings.sitePermissions);
+const rememberedDecision = (ses, origin, key) => (permissionStore(ses)[origin] || {})[key];
+
+function rememberDecision(ses, origin, key, decision) {
+  const store = permissionStore(ses);
+  (store[origin] = store[origin] || {})[key] = decision;
+  if (store === settings.sitePermissions) { save(); push(); }
+}
+
+function permissionList() {
+  const out = [];
+  for (const [origin, perms] of Object.entries(settings.sitePermissions)) {
+    for (const [key, decision] of Object.entries(perms)) out.push({ origin, key, label: PERMISSION_LABELS[key] || key, decision });
+  }
+  return out;
+}
+
+function cleanPermissions(value) {
+  const out = {};
+  if (!value || typeof value !== 'object') return out;
+  for (const [origin, perms] of Object.entries(value)) {
+    if (!secureOrigin(origin) || !perms || typeof perms !== 'object') continue;
+    for (const [key, decision] of Object.entries(perms)) {
+      if (PERMISSION_LABELS[key] && (decision === 'allow' || decision === 'deny')) (out[origin] = out[origin] || {})[key] = decision;
+    }
+  }
+  return out;
+}
+
+// macOS has its own camera/microphone switch per app; ask for it the first time.
+async function systemAccessOK(keys) {
+  if (!isMac) return true;
+  for (const key of keys) {
+    if (key !== 'camera' && key !== 'microphone') continue;
+    let status = systemPreferences.getMediaAccessStatus(key);
+    if (status === 'not-determined') {
+      try { await systemPreferences.askForMediaAccess(key); } catch { /* treated as not granted below */ }
+      status = systemPreferences.getMediaAccessStatus(key);
+    }
+    if (status !== 'granted') return false;
+  }
+  return true;
+}
+
+async function askPermission(ses, origin, keys) {
+  let host = origin;
+  try { host = new URL(origin).host; } catch { /* keep the origin */ }
+  const what = keys.map((k) => PERMISSION_ACTIONS[k]).join(' and ');
+  const options = {
+    type: 'question',
+    message: `“${host}” wants to ${what}.`,
+    detail: 'You can change this later in Settings > Privacy.',
+    buttons: ['Allow', 'Block'],
+    defaultId: 1,
+    cancelId: 1,
+    checkboxLabel: 'Remember my choice for this site',
+    checkboxChecked: true,
+  };
+  const { response, checkboxChecked } = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+  const allow = response === 0;
+  if (checkboxChecked) for (const key of keys) rememberDecision(ses, origin, key, allow ? 'allow' : 'deny');
+  return allow;
+}
+
+function handlePermissionRequest(ses, wc, permission, callback, details) {
+  if (ALWAYS_ALLOWED.has(permission)) return callback(true);
+  if (!ASKABLE.has(permission)) return callback(false);
+  let origin;
+  try {
+    origin = new URL((details && details.requestingUrl) || wc.getURL()).origin;
+  } catch {
+    return callback(false);
+  }
+  if (!secureOrigin(origin)) return callback(false);
+  const keys = permissionKeys(permission, (details && details.mediaTypes) || []);
+  const saved = keys.map((k) => rememberedDecision(ses, origin, k));
+  const finish = async (allow) => callback(allow && (await systemAccessOK(keys)));
+  if (saved.some((v) => v === 'deny')) return callback(false);
+  if (saved.every((v) => v === 'allow')) return finish(true);
+
+  const id = `${origin}|${keys.join(',')}|${ses === privateSes}`;
+  if (pendingPrompts.has(id)) { pendingPrompts.get(id).push(finish); return undefined; }
+  pendingPrompts.set(id, [finish]);
+  askPermission(ses, origin, keys)
+    .then((allow) => { for (const f of pendingPrompts.get(id)) f(allow); })
+    .catch(() => { for (const f of pendingPrompts.get(id)) f(false); })
+    .finally(() => pendingPrompts.delete(id));
+  return undefined;
+}
+
+function handlePermissionCheck(ses, permission, requestingOrigin, details) {
+  if (ALWAYS_ALLOWED.has(permission)) return true;
+  if (!ASKABLE.has(permission) || !secureOrigin(String(requestingOrigin || ''))) return false;
+  const type = details && details.mediaType;
+  const keys = permission === 'media' ? permissionKeys('media', type === 'video' ? ['video'] : type === 'audio' ? ['audio'] : []) : [permission];
+  return keys.every((k) => rememberedDecision(ses, requestingOrigin, k) === 'allow');
+}
+
+// ---------- Downloads ----------
+
+let downloads = []; // newest first: { id, name, url, path, total, received, state, startedAt, priv }
+const downloadItems = new Map(); // id -> the live Electron DownloadItem
+const watchedForDownloads = new WeakSet();
+let downloadTimer = null;
+const RISKY_EXTENSIONS = new Set(['.app', '.command', '.sh', '.pkg', '.dmg', '.exe', '.msi', '.bat', '.scpt', '.jar']);
+
+function sendDownloads() {
+  clearTimeout(downloadTimer);
+  downloadTimer = null;
+  send('downloads', downloads.map(({ priv, ...d }) => ({ ...d, missing: d.state === 'completed' && !fs.existsSync(d.path) })));
+}
+function sendDownloadsSoon() {
+  if (!downloadTimer) downloadTimer = setTimeout(sendDownloads, 250);
+}
+
+function uniquePath(dir, name) {
+  const ext = path.extname(name);
+  const base = path.basename(name, ext);
+  let candidate = path.join(dir, name);
+  for (let n = 1; fs.existsSync(candidate) && n < 1000; n++) candidate = path.join(dir, `${base} (${n})${ext}`);
+  return candidate;
+}
+
+function watchDownloads(ses) {
+  if (watchedForDownloads.has(ses)) return;
+  watchedForDownloads.add(ses);
+  ses.on('will-download', (_event, item) => {
+    const name = path.basename(item.getFilename() || 'download').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_') || 'download';
+    const target = uniquePath(app.getPath('downloads'), name);
+    item.setSavePath(target); // no save dialog: files go to the Downloads folder
+    const entry = {
+      id: uid(), name: path.basename(target), url: item.getURL(), path: target,
+      total: item.getTotalBytes(), received: 0, state: 'progressing', startedAt: Date.now(), priv: ses === privateSes,
+    };
+    downloads.unshift(entry);
+    for (const old of downloads.splice(50)) downloadItems.delete(old.id);
+    downloadItems.set(entry.id, item);
+    item.on('updated', (_e, state) => {
+      entry.received = item.getReceivedBytes();
+      entry.total = item.getTotalBytes();
+      entry.state = state === 'interrupted' ? 'interrupted' : item.isPaused() ? 'paused' : 'progressing';
+      sendDownloadsSoon();
+    });
+    item.once('done', (_e, state) => {
+      entry.state = state; // completed | cancelled | interrupted
+      if (state === 'completed') {
+        entry.received = item.getReceivedBytes();
+        entry.total = entry.received;
+        if (isMac) app.dock.downloadFinished(target);
+      }
+      downloadItems.delete(entry.id);
+      save();
+      sendDownloads();
+    });
+    send('cmd', 'downloads-open');
+    sendDownloads();
+  });
+}
+
+function downloadAction(id, what) {
+  const entry = downloads.find((d) => d.id === id);
+  if (!entry) return;
+  if (what === 'cancel') {
+    const item = downloadItems.get(id);
+    if (item) item.cancel();
+  } else if (what === 'remove') {
+    const item = downloadItems.get(id);
+    if (item) item.cancel();
+    downloadItems.delete(id);
+    downloads = downloads.filter((d) => d.id !== id);
+    save();
+    sendDownloads();
+  } else if (what === 'show') {
+    if (fs.existsSync(entry.path)) shell.showItemInFolder(entry.path);
+  } else if (what === 'open' && entry.state === 'completed' && fs.existsSync(entry.path)) {
+    // Programs and installers are revealed instead of launched.
+    if (RISKY_EXTENSIONS.has(path.extname(entry.path).toLowerCase())) shell.showItemInFolder(entry.path);
+    else shell.openPath(entry.path);
+  }
+}
+
+function clearDownloads() {
+  downloads = downloads.filter((d) => d.state === 'progressing' || d.state === 'paused');
+  save();
+  sendDownloads();
+}
+
+// ---------- Reopen closed tab, Print, PDF ----------
+
+let closedTabs = [];
+
+function rememberClosedTab(tab) {
+  if (!isWebURL(tab.url) || isPrivateGroup(tab.groupId)) return;
+  closedTabs.push({ url: tab.url, groupId: tab.groupId });
+  if (closedTabs.length > 20) closedTabs.shift();
+}
+
+function reopenClosedTab() {
+  const last = closedTabs.pop();
+  if (!last || !win) return;
+  createTab(last.url, { groupId: groups.some((g) => g.id === last.groupId) ? last.groupId : activeGroupId });
+}
+
+function printPage() {
+  const wc = activeWC();
+  if (wc) wc.print({ printBackground: true });
+}
+
+// target is for tests; normally the user picks where to save.
+async function savePDF(target) {
+  const wc = activeWC();
+  const tab = activeTab();
+  if (!wc || !tab) return null;
+  const data = await wc.printToPDF({ printBackground: true });
+  let file = target;
+  if (!file) {
+    const title = (tab.title || 'page').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 80) || 'page';
+    const result = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), `${title}.pdf`), filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+    if (result.canceled || !result.filePath) return null;
+    file = result.filePath;
+  }
+  await fs.promises.writeFile(file, data);
+  return file;
+}
+
+// The command palette (⌘K) lists tabs from every group; private groups are left out.
+function sendPaletteData() {
+  send('cmd', 'palette-data', tabs
+    .filter((t) => !isPrivateGroup(t.groupId))
+    .map((t) => ({ id: t.id, title: t.title, url: t.url, group: groupName(groups.find((g) => g.id === t.groupId) || { id: DEFAULT_GROUP }) })));
+}
+
+// ---------- Glass backdrop ----------
+// A web page is its own native view, so the interface cannot blur it directly. When a sheet opens
+// over a page, grab a small snapshot of that page; the sheet blurs the snapshot like frosted glass.
+async function captureBackdrop() {
+  const tab = activeTab();
+  const wc = tab && tab.view && !tab.view.webContents.isDestroyed() ? tab.view.webContents : null;
+  if (!wc) { send('cmd', 'backdrop', null); return; }
+  try {
+    const image = await wc.capturePage();
+    if (image.isEmpty()) { send('cmd', 'backdrop', null); return; }
+    send('cmd', 'backdrop', 'data:image/jpeg;base64,' + image.resize({ width: 480, quality: 'good' }).toJPEG(55).toString('base64'));
+  } catch {
+    send('cmd', 'backdrop', null);
+  }
+}
+
 // ---------- Right-click "Ask AI" ----------
 // Select text on any page, right-click, and pick what the AI should do with it.
 
@@ -1455,16 +1855,12 @@ function setUpdate(state, extra = {}) {
   send('update', updateStatus);
 }
 
-async function promptRestart(version, install) {
-  const { response } = await dialog.showMessageBox({
-    type: 'info',
-    message: `Thanary ${version} is ready to install.`,
-    detail: 'Restart now to update, or it will install the next time you quit.',
-    buttons: ['Restart now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-  });
-  if (response === 0) install();
+// The spinner should never just flash: whatever the answer, the check shows for a moment first.
+let checkStartedAt = 0;
+const MIN_CHECK_MS = 1400;
+function settleUpdate(state, extra) {
+  const wait = Math.max(0, MIN_CHECK_MS - (Date.now() - checkStartedAt));
+  setTimeout(() => setUpdate(state, extra), wait);
 }
 
 function setupAutoUpdate() {
@@ -1480,17 +1876,17 @@ function setupAutoUpdate() {
   autoUpdater.on('error', (error) => {
     console.error('Update error:', error);
     const message = String((error && error.message) || error || 'Unknown error').split('\n')[0].slice(0, 200);
-    setUpdate('error', { message });
+    settleUpdate('error', { message });
   });
-  autoUpdater.on('update-not-available', () => setUpdate('uptodate'));
+  autoUpdater.on('update-not-available', () => settleUpdate('uptodate'));
+  autoUpdater.on('download-progress', (p) => setUpdate('downloading', { version: updateStatus.version, progress: Math.round(p.percent) }));
   autoUpdater.on('update-available', (info) => {
     if (isMac) downloadMacUpdate(info);
     else setUpdate('downloading', { version: info.version });
   });
   autoUpdater.on('update-downloaded', (info) => {
     winUpdateReady = true;
-    setUpdate('ready', { version: info.version });
-    promptRestart(info.version, () => autoUpdater.quitAndInstall());
+    setUpdate('ready', { version: info.version }); // the toolbar shows an "Update" button; nothing pops up
   });
 }
 
@@ -1504,15 +1900,23 @@ function startAutoUpdate() {
 }
 
 function checkForUpdates() {
+  if (['ready', 'downloading', 'restarting'].includes(updateStatus.state)) return;
+  checkStartedAt = Date.now();
+  setUpdate('checking');
   if (!app.isPackaged) {
     // Updates only work in an installed build, not when running with `npm start`.
-    setUpdate('unavailable', { message: 'Updates only work in the installed app, not in a development run.' });
+    settleUpdate('unavailable', { message: 'Updates only work in the installed app, not in a development run.' });
     return;
   }
-  if (updateStatus.state === 'ready' || updateStatus.state === 'downloading') return;
   setupAutoUpdate();
-  setUpdate('checking');
   getUpdater().checkForUpdates().catch(() => {}); // errors are reported by the 'error' handler
+}
+
+// "Restart to Update": show the spinner for a moment before the window closes.
+function restartToUpdate() {
+  if (updateStatus.state !== 'ready') return;
+  setUpdate('restarting', { version: updateStatus.version });
+  setTimeout(installUpdate, 1300);
 }
 
 function installUpdate() {
@@ -1597,10 +2001,20 @@ async function downloadMacUpdate(info) {
     const res = await net.fetch(url);
     if (!res.ok) throw new Error(`Download failed (HTTP ${res.status}).`);
     const hash = crypto.createHash('sha512');
+    let received = 0;
+    let lastReport = 0;
     await pipeline(
       Readable.fromWeb(res.body),
       async function* (source) {
-        for await (const chunk of source) { hash.update(chunk); yield chunk; }
+        for await (const chunk of source) {
+          hash.update(chunk);
+          received += chunk.length;
+          if (file.size && Date.now() - lastReport > 250) {
+            lastReport = Date.now();
+            setUpdate('downloading', { version: info.version, progress: Math.min(99, Math.round((received / file.size) * 100)) });
+          }
+          yield chunk;
+        }
       },
       fs.createWriteStream(zipPath),
     );
@@ -1617,8 +2031,7 @@ async function downloadMacUpdate(info) {
     if (stdout.trim() !== APP_BUNDLE_ID) throw new Error('The update is not a Thanary build.');
 
     stagedMacUpdate = { newApp, target, version: info.version };
-    setUpdate('ready', { version: info.version });
-    promptRestart(info.version, () => { startMacInstaller(true); app.quit(); });
+    setUpdate('ready', { version: info.version }); // the toolbar shows an "Update" button; nothing pops up
   } catch (error) {
     console.error('Mac update failed:', error);
     const message = error instanceof Error ? error.message : String(error);
@@ -1681,6 +2094,11 @@ function buildMenu() {
         { type: 'separator' },
         { label: 'Open Location', accelerator: 'CmdOrCtrl+L', click: focusAddress },
         { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: needsWindow(() => closeTab(activeTabId())) },
+        { label: 'Reopen Closed Tab', accelerator: 'CmdOrCtrl+Shift+T', click: needsWindow(reopenClosedTab) },
+        { label: 'Pin or Unpin Tab', click: needsWindow(() => { const t = activeTab(); if (t) setPinned(t.id, !t.pinned); }) },
+        { type: 'separator' },
+        { label: 'Print…', accelerator: 'CmdOrCtrl+P', click: needsWindow(printPage) },
+        { label: 'Export as PDF…', click: needsWindow(() => { savePDF().catch(() => {}); }) },
         ...(isMac ? [] : [{ type: 'separator' }, { label: 'Settings…', accelerator: 'Ctrl+,', click: needsWindow(() => openSettings('general')) }, { role: 'quit' }]),
       ],
     },
@@ -1699,6 +2117,8 @@ function buildMenu() {
         { label: 'Show Sidebar', accelerator: 'CmdOrCtrl+Shift+L', click: needsWindow(() => setSetting('sidebar', !settings.sidebar)) },
         { label: 'Show Favorites Bar', accelerator: 'CmdOrCtrl+Shift+B', click: needsWindow(() => setSetting('favBar', !settings.favBar)) },
         { label: 'Show Tab Overview', accelerator: 'CmdOrCtrl+Shift+\\', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'overview'); }) },
+        { label: 'Command Palette…', accelerator: 'CmdOrCtrl+K', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'palette'); }) },
+        { label: 'Show Downloads', accelerator: 'CmdOrCtrl+Shift+J', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'downloads-open'); sendDownloads(); }) },
         { label: 'Ask AI…', accelerator: 'CmdOrCtrl+Shift+A', click: needsWindow(() => { ui.webContents.focus(); send('cmd', 'ai'); }) },
         { label: 'Block Ads and Trackers', type: 'checkbox', checked: !!settings.adblock, click: (item) => setSetting('adblock', item.checked) },
         { type: 'separator' },
