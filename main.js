@@ -37,22 +37,34 @@ let nextId = 1;
 let bookmarks = [];
 let readingList = [];
 let history = [];
-// Links shown on the start page. Editable in Settings > Start Page.
+// Links shown on the start page, grouped into columns. Editable in Settings > Start Page.
 const DEFAULT_WORK_LINKS = [
-  { title: 'THA Production', url: 'https://tha-production.com/', favicon: null },
-  { title: 'Projekte', url: 'https://tha-production.com/projekte.html', favicon: null },
-  { title: 'MyClient', url: 'https://tha-production.com/myclient.html', favicon: null },
-  { title: 'Angebote', url: 'https://tha-production.com/angebote.html', favicon: null },
-  { title: 'GitHub', url: 'https://github.com/THA-Production', favicon: null },
-  { title: 'Cloudflare', url: 'https://dash.cloudflare.com/', favicon: null },
-  { title: 'YouTube', url: 'https://www.youtube.com/@THA-Production', favicon: null },
+  { title: 'THA Production', url: 'https://tha-production.com/', group: 'Work', favicon: null },
+  { title: 'Projekte', url: 'https://tha-production.com/projekte.html', group: 'Work', favicon: null },
+  { title: 'Angebote', url: 'https://tha-production.com/angebote.html', group: 'Work', favicon: null },
+  { title: 'Team', url: 'https://tha-production.com/team.html', group: 'Work', favicon: null },
+  { title: 'YouTube', url: 'https://www.youtube.com/@THA-Production', group: 'Work', favicon: null },
+  { title: 'MyClient', url: 'https://tha-production.com/myclient.html', group: 'MyClient', favicon: null },
+  { title: 'Anmelden', url: 'https://tha-production.com/login.html', group: 'MyClient', favicon: null },
+  { title: 'Galerie', url: 'https://tha-production.com/gallery.html', group: 'MyClient', favicon: null },
+  { title: 'Kalender', url: 'https://tha-production.com/tha-calendar/', group: 'MyClient', favicon: null },
+  { title: 'GitHub', url: 'https://github.com/THA-Production', group: 'Dev & Cloud', favicon: null },
+  { title: 'Cloudflare', url: 'https://dash.cloudflare.com/', group: 'Dev & Cloud', favicon: null },
 ];
+// The links v0.3.x shipped with, to tell an untouched list from one the user edited.
+const OLD_DEFAULT_LINK_URLS = new Set([
+  'https://tha-production.com/', 'https://tha-production.com/projekte.html', 'https://tha-production.com/myclient.html',
+  'https://tha-production.com/angebote.html', 'https://github.com/THA-Production', 'https://dash.cloudflare.com/',
+  'https://www.youtube.com/@THA-Production',
+]);
 
 let settings = {
   sidebar: false,
   favBar: false,
   adblock: true,
   autoUpdate: true,
+  autoLogin: true,
+  linksVersion: 2,
   searchEngine: 'google',
   userName: null, // null = not chosen yet; filled from the Mac's user name on first launch
   defaultGroupName: 'Tabs',
@@ -91,7 +103,15 @@ function loadStore() {
   readingList = list(data.readingList).filter((r) => r && isWebURL(r.url));
   history = list(data.history).filter((h) => h && isWebURL(h.url)).slice(0, HISTORY_LIMIT);
   settings = { ...settings, ...(data.settings || {}) };
-  settings.workLinks = cleanLinks(settings.workLinks);
+  const savedVersion = (data.settings && data.settings.linksVersion) || 1;
+  if (savedVersion < 2) {
+    const saved = cleanLinks(settings.workLinks);
+    const untouched = saved.length === OLD_DEFAULT_LINK_URLS.size && saved.every((l) => OLD_DEFAULT_LINK_URLS.has(l.url));
+    settings.workLinks = untouched ? DEFAULT_WORK_LINKS.map((l) => ({ ...l })) : saved.map((l) => ({ ...l, group: l.group || 'Links' }));
+    settings.linksVersion = 2;
+  } else {
+    settings.workLinks = cleanLinks(settings.workLinks);
+  }
   if (!ENGINES[settings.searchEngine]) settings.searchEngine = 'google';
   const savedGroups = list(data.groups).filter((g) => g && typeof g.id === 'string' && g.id !== DEFAULT_GROUP);
   groups = [{ id: DEFAULT_GROUP, name: '' }, ...savedGroups.map((g) => ({ id: g.id, name: String(g.name || 'Untitled') }))];
@@ -267,6 +287,7 @@ function push() {
     version: app.getVersion(),
     versions: { electron: process.versions.electron, chrome: process.versions.chrome },
     aiTokenSaved,
+    logins: vaultList(),
   });
 }
 
@@ -416,6 +437,7 @@ function ensureView(tab) {
   wc.on('enter-html-full-screen', () => { htmlFullscreen = true; applyZ(); layout(); });
   wc.on('leave-html-full-screen', () => { htmlFullscreen = false; applyZ(); layout(); });
   wc.on('context-menu', (_e, params) => pageContextMenu(tab, params));
+  wc.on('dom-ready', () => autofillFor(tab));
   return view;
 }
 
@@ -699,6 +721,19 @@ function pageContextMenu(tab, params) {
       { type: 'separator' },
     );
   }
+  const selected = params.selectionText.trim();
+  if (selected) {
+    template.push(
+      { label: 'Ask AI', submenu: AI_ACTIONS.map((a) => ({ label: a.label, click: () => runAI(a.instruction, selected) })) },
+      { type: 'separator' },
+    );
+  }
+  if (params.isEditable && params.inputFieldType === 'password' && loginOrigin(tab.url)) {
+    template.push(
+      { label: 'Save Auto-Login for This Site…', click: () => openSettings('logins', { prefillUrl: loginOrigin(tab.url) }) },
+      { type: 'separator' },
+    );
+  }
   const nav = wc.navigationHistory;
   template.push(
     { label: 'Back', enabled: nav.canGoBack(), click: () => nav.goBack() },
@@ -736,6 +771,7 @@ const SETTING_RULES = {
   favBar: (v) => !!v,
   adblock: (v) => !!v,
   autoUpdate: (v) => !!v,
+  autoLogin: (v) => !!v,
   searchEngine: (v) => (ENGINES[v] ? v : 'google'),
   userName: (v) => String(v == null ? '' : v).trim().slice(0, 40),
   aiModel: (v) => (/^[\w.\-\/]{2,80}$/.test(String(v || '').trim()) ? String(v).trim() : 'openai/gpt-4.1-mini'),
@@ -855,6 +891,17 @@ const actions = {
   'whatsnew.open': () => send('cmd', 'whatsnew', { version: app.getVersion(), fresh: false }),
   'work.save': (links) => { settings.workLinks = cleanLinks(links); save(); push(); },
   'privacy.clear': () => clearSiteData(),
+  'app.open': (url, groupName) => openApp(url, groupName),
+  'login.save': (data) => { const result = saveLogin(data || {}); push(); send('cmd', 'login-result', result); },
+  'login.update': (id, patch) => {
+    const login = vault.find((v) => v.id === id);
+    if (!login || !patch) return;
+    if ('enabled' in patch) login.enabled = !!patch.enabled;
+    if ('autoSubmit' in patch) login.autoSubmit = !!patch.autoSubmit;
+    saveVault();
+    push();
+  },
+  'login.remove': (id) => { vault = vault.filter((v) => v.id !== id); saveVault(); push(); },
   'ai.ask': (id, history, includePage) => askAI(id, Array.isArray(history) ? history : [], !!includePage),
   'ai.setToken': (token) => { const ok = saveAiToken(token); push(); send('cmd', 'ai-token', { ok }); },
   'ai.removeToken': () => { removeAiToken(); push(); },
@@ -955,7 +1002,8 @@ function cleanLinks(list) {
     if (!title) {
       try { title = new URL(link.url).hostname.replace(/^www\./, ''); } catch { continue; }
     }
-    out.push({ title, url: link.url, favicon: slimIcon(link.favicon) });
+    const group = String(link.group || '').trim().slice(0, 30) || 'Links';
+    out.push({ title, url: link.url, group, favicon: slimIcon(link.favicon) });
   }
   return out;
 }
@@ -986,10 +1034,10 @@ function viewSource() {
   switchTab(source.id);
 }
 
-function openSettings(pane) {
+function openSettings(pane, extra) {
   if (!win) return;
   ui.webContents.focus();
-  send('cmd', 'settings', pane || 'general');
+  send('cmd', 'settings', extra ? { pane, ...extra } : pane || 'general');
 }
 
 function showUpdates() {
@@ -1197,6 +1245,198 @@ async function askAI(id, history, includePage) {
   } catch (error) {
     return reply({ error: 'Could not reach GitHub Models: ' + error.message });
   }
+}
+
+// ---------- Right-click "Ask AI" ----------
+// Select text on any page, right-click, and pick what the AI should do with it.
+
+const AI_ACTIONS = [
+  { label: 'Explain', instruction: 'Explain this in simple terms.' },
+  { label: 'Solve', instruction: 'Solve this. Show the steps and the final answer.' },
+  { label: 'Summarize', instruction: 'Summarize this in a few short points.' },
+  { label: 'Translate to English', instruction: 'Translate this to English.' },
+  { label: 'Fix and Improve Writing', instruction: 'Correct the spelling and grammar and improve the wording, keeping the meaning.' },
+];
+
+function runAI(instruction, selection) {
+  if (!win) return;
+  ui.webContents.focus();
+  send('cmd', 'ai-run', { instruction, selection: String(selection).slice(0, 6000) });
+}
+
+// Opens a MyClient (or any other) page as a single "app" tab: focus it if it is already open,
+// and keep such app pages together in their own tab group (e.g. "MyClient") in the top bar.
+function openApp(url, groupName) {
+  if (!isWebURL(url)) return;
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    return;
+  }
+  const open = tabs.find((t) => {
+    if (t.appUrl === url && !isPrivateGroup(t.groupId)) return true; // it may have been redirected (e.g. to a login page)
+    try {
+      const u = new URL(t.url);
+      return u.origin === target.origin && u.pathname === target.pathname && !isPrivateGroup(t.groupId);
+    } catch {
+      return false;
+    }
+  });
+  if (open) {
+    if (open.groupId !== activeGroupId) switchGroup(open.groupId);
+    switchTab(open.id);
+    return;
+  }
+  let groupId = isPrivateGroup(activeGroupId) ? DEFAULT_GROUP : activeGroupId;
+  const name = String(groupName || '').trim().slice(0, 40);
+  if (name) {
+    let group = groups.find((g) => !g.private && g.id !== DEFAULT_GROUP && g.name === name);
+    if (!group) {
+      group = { id: uid(), name };
+      groups.push(group);
+    }
+    groupId = group.id;
+  }
+  const opened = createTab(url, { groupId });
+  if (opened) opened.appUrl = url;
+}
+
+// ---------- Auto-login (saved logins) ----------
+// Logins are stored encrypted with the Mac keychain (safeStorage) and are only ever filled in on
+// the exact website they were saved for (https, same origin). The Settings screen never receives
+// a saved password back; it only sees the username.
+
+const vaultFile = () => path.join(app.getPath('userData'), 'logins.bin');
+let vault = []; // { id, origin, username, password, enabled, autoSubmit }
+const lastAutoSubmit = new Map(); // origin -> time of the last automatic sign-in
+const AUTO_SUBMIT_COOLDOWN_MS = 90 * 1000; // stops a wrong password from being retried in a loop
+
+const validLogin = (l) => l && typeof l.id === 'string' && typeof l.origin === 'string' && typeof l.username === 'string' && typeof l.password === 'string';
+
+function loadVault() {
+  if (!fs.existsSync(vaultFile())) return; // nothing saved yet, so the keychain is never touched
+  try {
+    const list = JSON.parse(safeStorage.decryptString(fs.readFileSync(vaultFile())));
+    vault = Array.isArray(list) ? list.filter(validLogin) : [];
+  } catch (error) {
+    console.error('Could not read saved logins:', error.message);
+    vault = [];
+  }
+}
+
+function saveVault() {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  try {
+    fs.writeFileSync(vaultFile(), safeStorage.encryptString(JSON.stringify(vault)), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const vaultList = () => vault.map(({ id, origin, username, enabled, autoSubmit }) => ({ id, origin, username, enabled, autoSubmit }));
+
+// "https://example.com/login?x" -> "https://example.com". https only (plain http just for localhost).
+function loginOrigin(input) {
+  let url;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(input) ? input : 'https://' + input);
+  } catch {
+    return null;
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol === 'https:' || (url.protocol === 'http:' && local)) return url.origin;
+  return null;
+}
+
+function saveLogin(data) {
+  const origin = loginOrigin(String(data.url || ''));
+  const username = String(data.username || '').trim().slice(0, 200);
+  if (!origin || !username) return { ok: false, error: 'Enter a website address and a username or email.' };
+  const password = String(data.password || '').slice(0, 500);
+  const existing = data.id ? vault.find((v) => v.id === data.id) : null;
+  if (!existing && !password) return { ok: false, error: 'Enter the password.' };
+  if (existing) {
+    existing.origin = origin;
+    existing.username = username;
+    if (password) existing.password = password; // a blank password keeps the saved one
+    existing.autoSubmit = !!data.autoSubmit;
+  } else {
+    if (vault.length >= 100) return { ok: false, error: 'There are too many saved logins.' };
+    vault.push({ id: uid(), origin, username, password, enabled: true, autoSubmit: !!data.autoSubmit });
+  }
+  if (!saveVault()) return { ok: false, error: 'Secure storage is not available on this Mac.' };
+  return { ok: true };
+}
+
+// Runs inside the page: finds the login form, fills it, and optionally presses the button.
+// Waits up to 15 seconds for forms that only appear after the page's scripts have run.
+function autofillInPage(username, password, submit) {
+  return new Promise((resolve) => {
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && !el.disabled;
+    };
+    const setValue = (el, value) => {
+      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+      setter.call(el, value); // the native setter, so React/Vue see the change
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const textInputs = (scope) =>
+      [...scope.querySelectorAll('input')].filter((i) => visible(i) && !i.readOnly && ['text', 'email', 'tel', ''].includes((i.type || '').toLowerCase()));
+    const guessUser = (scope, before) => {
+      const list = textInputs(scope).filter((i) => !before || i.compareDocumentPosition(before) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const likely = list.filter((i) => /user|mail|login|name|account|konto|benutzer|identif/i.test(`${i.name} ${i.id} ${i.autocomplete} ${i.placeholder}`));
+      return likely[likely.length - 1] || list[list.length - 1] || null;
+    };
+    let usernameDone = false;
+    const attempt = () => {
+      const pw = [...document.querySelectorAll('input[type="password"]')].find(visible);
+      if (!pw) {
+        // Two-step sign-ins show the username first.
+        if (!usernameDone) {
+          const only = textInputs(document).find((i) => /email|username|login|user/i.test(`${i.type} ${i.name} ${i.id} ${i.autocomplete}`));
+          if (only && !only.value) { setValue(only, username); usernameDone = true; }
+        }
+        return false;
+      }
+      if (pw.value) { resolve('already'); return true; }
+      const form = pw.form || pw.closest('form');
+      const user = guessUser(form || document, pw);
+      if (user && !user.value) setValue(user, username);
+      setValue(pw, password);
+      if (!submit) { resolve('filled'); return true; }
+      setTimeout(() => {
+        const button = form && [...form.querySelectorAll('button, input[type="submit"]')].find((b) => visible(b) && (!b.type || b.type === 'submit'));
+        if (button) button.click();
+        else if (form && form.requestSubmit) form.requestSubmit();
+        else pw.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
+        resolve('submitted');
+      }, 350);
+      return true;
+    };
+    if (attempt()) return;
+    const observer = new MutationObserver(() => { if (attempt()) observer.disconnect(); });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+    setTimeout(() => { observer.disconnect(); resolve('none'); }, 15000);
+  });
+}
+
+function autofillFor(tab) {
+  if (!settings.autoLogin || !tab.view || tab.view.webContents.isDestroyed()) return;
+  const wc = tab.view.webContents;
+  const origin = loginOrigin(wc.getURL());
+  if (!origin) return;
+  const login = vault.find((v) => v.enabled && v.origin === origin);
+  if (!login) return;
+  const last = lastAutoSubmit.get(origin) || 0;
+  const submit = login.autoSubmit && Date.now() - last > AUTO_SUBMIT_COOLDOWN_MS;
+  wc.executeJavaScript(`(${autofillInPage.toString()})(${JSON.stringify(login.username)}, ${JSON.stringify(login.password)}, ${submit})`)
+    .then((result) => { if (result === 'submitted') lastAutoSubmit.set(origin, Date.now()); })
+    .catch(() => {});
 }
 
 // ---------- Auto-update (from GitHub Releases) ----------
@@ -1550,6 +1790,7 @@ app.whenReady().then(() => {
   session.defaultSession.preconnect({ url: 'https://www.google.com', numSockets: 2 });
 
   loadStore();
+  loadVault();
   if (settings.userName == null) settings.userName = systemFirstName();
   aiTokenSaved = fs.existsSync(tokenFile());
   initAdblock();

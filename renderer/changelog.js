@@ -3,6 +3,16 @@
 // ICONS in renderer.js.
 window.CHANGELOG = [
   {
+    version: '0.4.0',
+    items: [
+      { icon: 'home', title: 'A new start page', text: 'A black, portal-style home with your THA links, colorful tiles, a search box with often-visited sites, and a feed of recent pages, favorites and your reading list.' },
+      { icon: 'users', title: 'MyClient built in', text: 'MyClient opens in its own group in the top bar and always jumps back to the same tab. The left rail and the start page link straight to it.' },
+      { icon: 'key', title: 'Auto-Login', text: 'Save a username or email and password per website in Settings. Thanary fills them in when the login page opens, and can sign you in too. Switch single sites or everything off.' },
+      { icon: 'sparkle', title: 'Ask AI from a right-click', text: 'Select text on any page, right-click and choose Explain, Solve, Summarize, Translate or Fix and Improve Writing.' },
+      { icon: 'folder', title: 'Link groups', text: 'Group your start page links (Work, MyClient, Dev & Cloud …) in Settings > Start Page.' },
+    ],
+  },
+  {
     version: '0.3.0',
     items: [
       { icon: 'tabs', title: 'Tab groups in the top bar', text: 'Your groups now sit next to your tabs, like a real tab bar. Click to switch, double-click to rename, drag a tab onto a group to move it.' },

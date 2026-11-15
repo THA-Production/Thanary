@@ -89,31 +89,68 @@
 
       <div id="page">
         <div id="start">
-          <div class="start-inner">
-            <div class="start-hero reveal">
-              <img class="start-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
-              <div>
-                <h1 id="greeting"></h1>
-                <p id="subgreeting"></p>
+          <nav class="rail" aria-label="Start page">
+            <button class="rail-btn active" data-go="top"><i data-icon="home"></i><span>Home</span></button>
+            <button class="rail-btn" data-go="sec-links"><i data-icon="folder"></i><span>Work</span></button>
+            <button class="rail-btn" data-app="https://tha-production.com/myclient.html"><i data-icon="users"></i><span>MyClient</span></button>
+            <button class="rail-btn" data-go="sec-feed" data-feed="favorites"><i data-icon="star"></i><span>Favorites</span></button>
+            <button class="rail-btn" data-go="sec-feed" data-feed="reading"><i data-icon="glasses"></i><span>Reading</span></button>
+            <button class="rail-btn" data-pane="history"><i data-icon="clock"></i><span>History</span></button>
+            <span class="rail-grow"></span>
+            <button class="rail-btn" data-settings><i data-icon="gear"></i><span>Settings</span></button>
+          </nav>
+
+          <div class="portal" id="portal">
+            <div class="portal-wrap">
+              <div class="portal-top reveal">
+                <div id="top-links" class="top-links"></div>
+                <div class="portal-user"><span id="avatar" class="avatar"></span><span id="who"></span></div>
               </div>
+
+              <nav id="portal-nav" class="portal-nav reveal" aria-label="Link groups"></nav>
+
+              <div class="portal-hero reveal">
+                <img class="start-logo logo-adapt" src="assets/tha-logo.png" alt="THA">
+                <div>
+                  <h1 id="greeting"></h1>
+                  <p id="subgreeting"></p>
+                </div>
+              </div>
+
+              <div class="portal-search reveal">
+                <div class="search-box">
+                  <input id="start-input" type="text" spellcheck="false" autocomplete="off" aria-label="Search">
+                  <button id="start-go" aria-label="Search"><i data-icon="search"></i></button>
+                </div>
+                <div id="search-drop" class="search-drop" hidden></div>
+              </div>
+
+              <div class="portal-grid">
+                <section id="sec-links" class="panel reveal">
+                  <h2 class="panel-title"><i data-icon="folder"></i><span id="links-title">THA Production</span></h2>
+                  <div id="portal-links"></div>
+                </section>
+                <aside id="sec-tiles" class="panel reveal">
+                  <h2 class="panel-title"><span>My Tiles</span></h2>
+                  <div id="portal-tiles" class="sq-grid"></div>
+                </aside>
+              </div>
+
+              <section id="sec-feed" class="feed reveal">
+                <div class="feed-bar">
+                  <div class="chips" id="feed-chips">
+                    <button class="fchip active" data-feed="recent">Recently visited</button>
+                    <button class="fchip" data-feed="favorites">Favorites</button>
+                    <button class="fchip" data-feed="reading">Reading list</button>
+                  </div>
+                  <div class="view-toggle">
+                    <button id="view-tiles" class="vt active"><i data-icon="grid4"></i><span>Tiles</span></button>
+                    <button id="view-list" class="vt"><i data-icon="list"></i><span>List</span></button>
+                  </div>
+                </div>
+                <div id="feed-items" class="feed-items"></div>
+              </section>
             </div>
-            <button id="start-search" class="start-search reveal"><i data-icon="search"></i><span id="start-search-text"></span></button>
-            <section class="start-section" id="sec-work">
-              <h3 class="reveal">THA Production</h3>
-              <div class="tiles" id="start-work"></div>
-            </section>
-            <section class="start-section" id="sec-favorites">
-              <h3 class="reveal">Favorites</h3>
-              <div class="tiles" id="start-favs"></div>
-            </section>
-            <section class="start-section" id="sec-frequent">
-              <h3 class="reveal">Frequently Visited</h3>
-              <div class="tiles" id="start-frequent"></div>
-            </section>
-            <section class="start-section" id="sec-reading">
-              <h3 class="reveal">Reading List</h3>
-              <div class="cards" id="start-reading"></div>
-            </section>
           </div>
         </div>
 
@@ -138,6 +175,7 @@
             <button data-spane="general"><i data-icon="gear"></i><span>General</span></button>
             <button data-spane="start"><i data-icon="home"></i><span>Start Page</span></button>
             <button data-spane="privacy"><i data-icon="shield"></i><span>Privacy</span></button>
+            <button data-spane="logins"><i data-icon="key"></i><span>Auto-Login</span></button>
             <button data-spane="ai"><i data-icon="sparkle"></i><span>AI Assistant</span></button>
             <button data-spane="updates"><i data-icon="refresh"></i><span>Updates</span></button>
           </nav>
@@ -200,6 +238,37 @@
               <div class="set-row">
                 <div class="set-text"><strong>Private tab groups</strong><span>Pages open without saving history, cookies or logins, and everything is erased when the group is closed.</span></div>
                 <button id="set-new-private" class="btn">New Private Group</button>
+              </div>
+            </div>
+
+            <div class="set-pane" data-spane="logins">
+              <h3>Auto-Login</h3>
+              <div class="set-row">
+                <div class="set-text"><strong>Fill in saved logins</strong><span>Turn this off to pause Auto-Login on every website.</span></div>
+                <label class="switch"><input type="checkbox" id="set-autologin"><span></span></label>
+              </div>
+              <div class="set-block">
+                <div class="set-text"><strong>Saved logins</strong><span><em>On</em> fills in the username and password when the login page opens. <em>Sign in</em> also presses the login button, so after a logout you are signed straight back in.</span></div>
+                <div id="logins-list"></div>
+              </div>
+              <div class="set-block">
+                <div class="set-text"><strong id="login-form-title">Add a login</strong><span>Passwords are encrypted with your Mac’s keychain, never shown again, and only filled in on exactly this website (https).</span></div>
+                <div class="login-form">
+                  <div class="inline">
+                    <input id="login-url" type="text" placeholder="Website, e.g. https://example.com" autocomplete="off" spellcheck="false">
+                    <button id="login-current" class="btn">Use This Page</button>
+                  </div>
+                  <input id="login-user" type="text" placeholder="Username or email" autocomplete="off" spellcheck="false">
+                  <input id="login-pass" type="password" placeholder="Password" autocomplete="new-password">
+                  <div class="ai-actions">
+                    <label class="check"><input type="checkbox" id="login-auto"><span>Sign in automatically</span></label>
+                    <div class="inline">
+                      <button id="login-cancel" class="btn" hidden>Cancel</button>
+                      <button id="login-save" class="btn primary">Save Login</button>
+                    </div>
+                  </div>
+                  <p id="login-note" class="set-note"></p>
+                </div>
               </div>
             </div>
 

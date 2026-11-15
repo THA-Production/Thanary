@@ -31,6 +31,19 @@ const ICONS = {
   sparkle: svg('<path d="M11 4.5 12.8 9.2 17.5 11l-4.7 1.8L11 17.5l-1.8-4.7L4.5 11l4.7-1.8L11 4.5z"/><path d="M18.5 15.5v4M16.5 17.5h4"/>'),
   refresh: svg('<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19.5 4v4.5H15"/>'),
   bolt: svg('<path d="M13 3.5 6 13h5l-1 7.5L18 11h-5.2L13 3.5z"/>'),
+  folder: svg('<path d="M4 7.5A1.5 1.5 0 0 1 5.5 6H10l2 2.5h6.5A1.5 1.5 0 0 1 20 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z"/>'),
+  tag: svg('<path d="M4.5 11.2V5.5a1 1 0 0 1 1-1h5.7l8 8a1.4 1.4 0 0 1 0 2l-4.7 4.7a1.4 1.4 0 0 1-2 0z"/><circle cx="8.5" cy="8.5" r="1.2"/>'),
+  users: svg('<circle cx="9" cy="9" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M15.5 6.2a3 3 0 0 1 0 5.6M17 14.2a5.5 5.5 0 0 1 3.5 4.8"/>'),
+  key: svg('<circle cx="8" cy="15" r="3.5"/><path d="m10.5 12.5 8-8M15.5 7.5l2.5 2.5M13 10l2 2"/>'),
+  image: svg('<rect x="4" y="5" width="16" height="14" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m4.5 17 4.5-4.5 3.5 3.5 2.5-2.5 4.5 4.5"/>'),
+  calendar: svg('<rect x="4" y="5.5" width="16" height="14" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>'),
+  code: svg('<path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 6l-3 12"/>'),
+  cloud: svg('<path d="M7 18a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 9.5a4.2 4.2 0 0 1 .5 8.5z"/>'),
+  play: svg('<rect x="3.5" y="6" width="17" height="12" rx="3.5"/><path d="m10.5 9.5 4 2.5-4 2.5z" fill="currentColor"/>'),
+  star: svg('<path d="m12 4.5 2.3 4.8 5.2.7-3.8 3.7.9 5.2L12 16.3 7.4 18.9l.9-5.2L4.5 10l5.2-.7z"/>'),
+  arrowR: svg('<path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5"/>'),
+  grid4: svg('<path d="M5 5h4.5v4.5H5zM14.5 5H19v4.5h-4.5zM5 14.5h4.5V19H5zM14.5 14.5H19V19h-4.5z"/>'),
+  list: svg('<path d="M8.5 6.5H19M8.5 12H19M8.5 17.5H19M4.8 6.5h.01M4.8 12h.01M4.8 17.5h.01"/>'),
 };
 
 for (const el of document.querySelectorAll('[data-icon]')) el.innerHTML = ICONS[el.dataset.icon] || '';
@@ -48,6 +61,15 @@ function icon(name, className) {
   const node = el('i', className);
   node.innerHTML = ICONS[name];
   return node;
+}
+
+// The Thanary favicon, used wherever a tab has no page loaded (the start page).
+function brandFavicon(className) {
+  const img = el('img', className);
+  img.alt = '';
+  img.draggable = false;
+  img.src = 'assets/favicon-64.png';
+  return img;
 }
 
 function hostOf(url) {
@@ -252,6 +274,8 @@ function updateTabEl(node, tab) {
     iconEl.append(img);
   } else if (tab.url) {
     iconEl.innerHTML = ICONS.globe;
+  } else {
+    iconEl.append(brandFavicon());
   }
 }
 
@@ -641,50 +665,265 @@ function tile(entry, onMenu) {
   return node;
 }
 
+// ---- Portal start page: top links, group tabs, search, link card, tiles and a feed ----
+
+const PALETTE = ['#1d4ed8', '#ea580c', '#0891b2', '#dc2626', '#7c3aed', '#059669', '#be185d', '#ca8a04'];
+let linkFilter = 'all';
+let feedTab = 'recent';
+let feedView = 'tiles';
+try {
+  feedView = localStorage.getItem('thanary-feed-view') === 'list' ? 'list' : 'tiles';
+} catch {
+  // storage can be unavailable; the default view is fine
+}
+
+function linkIcon(link) {
+  const t = `${link.title} ${link.url}`.toLowerCase();
+  if (/github/.test(t)) return 'code';
+  if (/cloudflare/.test(t)) return 'cloud';
+  if (/youtube/.test(t)) return 'play';
+  if (/gallery|galerie/.test(t)) return 'image';
+  if (/calendar|kalender/.test(t)) return 'calendar';
+  if (/login|anmelden/.test(t)) return 'key';
+  if (/team|myclient/.test(t)) return 'users';
+  if (/projekt/.test(t)) return 'folder';
+  if (/angebot/.test(t)) return 'tag';
+  return 'globe';
+}
+
+const isBrandHome = (link) => {
+  try {
+    const u = new URL(link.url);
+    return /(^|\.)tha-production\.com$/.test(u.hostname) && u.pathname === '/';
+  } catch {
+    return false;
+  }
+};
+
+// MyClient pages open as one "app" tab: clicking again jumps back to it instead of piling up tabs.
+function openLink(link, event) {
+  const newTab = !!(event && (event.metaKey || event.ctrlKey));
+  if (link.group === 'MyClient' && !newTab) act('app.open', link.url, 'MyClient');
+  else act('nav.open', link.url, newTab);
+}
+
+function ago(ts) {
+  const minutes = Math.round((Date.now() - ts) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'yesterday' : `${days} days ago`;
+}
+
 function renderStart() {
   const hour = new Date().getHours();
   const hello = hour < 5 ? 'Good night' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const name = state && state.settings.userName;
   $('greeting').textContent = name ? `${hello}, ${name}` : 'Hello there';
   $('subgreeting').textContent = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  $('start-search-text').textContent = `Search ${state ? state.searchName : 'the web'} or enter a website name`;
+  $('who').textContent = name || 'THA';
+  $('avatar').textContent = (name || 'THA').trim()[0].toUpperCase();
+  $('start-input').placeholder = `Search ${state ? state.searchName : 'the web'} or enter a website name`;
 
   const links = (state && state.settings.workLinks) || [];
-  const workEl = $('start-work');
-  workEl.textContent = '';
-  for (const link of links) workEl.append(tile(link));
-  $('sec-work').hidden = !links.length;
+  const groups = [...new Set(links.map((l) => l.group))];
+  if (linkFilter !== 'all' && !groups.includes(linkFilter)) linkFilter = 'all';
 
-  const favorites = lib.bookmarks.filter((b) => b.favorite);
-  const favEl = $('start-favs');
-  favEl.textContent = '';
-  for (const bookmark of favorites) favEl.append(tile(bookmark, () => act('bookmark.menu', bookmark.id)));
-  $('sec-favorites').hidden = !favorites.length;
-
-  const frequent = lib.topSites.filter((site) => !favorites.some((b) => b.url === site.url));
-  const freqEl = $('start-frequent');
-  freqEl.textContent = '';
-  for (const site of frequent) freqEl.append(tile(site));
-  $('sec-frequent').hidden = !frequent.length;
-
-  const readingEl = $('start-reading');
-  readingEl.textContent = '';
-  for (const item of lib.readingList.slice(0, 6)) {
-    const card = el('button', 'card reveal');
-    card.append(siteIcon(item.favicon, item.url, 'small'));
-    const text = el('span', 'card-text');
-    text.append(el('span', 'card-title', item.title || hostOf(item.url)), el('span', 'card-sub', hostOf(item.url)));
-    card.append(text);
-    card.addEventListener('click', (event) => act('nav.open', item.url, event.metaKey || event.ctrlKey));
-    card.addEventListener('contextmenu', (event) => { event.preventDefault(); act('reading.menu', item.id); });
-    readingEl.append(card);
+  // small links across the top
+  const top = $('top-links');
+  top.textContent = '';
+  for (const link of links.filter((l) => l.group === groups[0]).slice(0, 5)) {
+    const a = el('button', 'top-link', link.title);
+    a.addEventListener('click', (event) => openLink(link, event));
+    top.append(a);
   }
-  $('sec-reading').hidden = !lib.readingList.length;
 
+  // big group tabs
+  const nav = $('portal-nav');
+  nav.textContent = '';
+  for (const key of ['all', ...groups]) {
+    const tab = el('button', 'pnav' + (key === linkFilter ? ' active' : ''), key === 'all' ? 'Home' : key);
+    tab.addEventListener('click', () => { linkFilter = key; renderStart(); });
+    nav.append(tab);
+  }
+
+  // link card: one column per group, or one group spread over several columns
+  const box = $('portal-links');
+  box.textContent = '';
+  $('links-title').textContent = linkFilter === 'all' ? 'THA Production' : linkFilter;
+  const shown = linkFilter === 'all' ? groups : [linkFilter];
+  const cols = el('div', 'link-cols' + (linkFilter === 'all' ? ' by-group' : ' single'));
+  for (const group of shown) {
+    const col = el('div', 'link-col');
+    if (linkFilter === 'all') col.append(el('h3', 'link-head', group));
+    for (const link of links.filter((l) => l.group === group)) {
+      const row = el('button', 'link-row2');
+      row.append(el('span', '', link.title));
+      const arrow = icon('arrowR', 'arrow');
+      row.append(arrow);
+      row.title = link.url;
+      row.addEventListener('click', (event) => openLink(link, event));
+      col.append(row);
+    }
+    cols.append(col);
+  }
+  if (!links.length) cols.append(el('p', 'empty', 'Add links in Settings > Start Page.'));
+  box.append(cols);
+
+  // colourful tiles
+  const tiles = $('portal-tiles');
+  tiles.textContent = '';
+  for (const link of links) {
+    const sq = el('button', 'sq');
+    const brand = isBrandHome(link);
+    sq.style.background = brand ? '#000' : PALETTE[hueOf(link.title) % PALETTE.length];
+    if (brand) {
+      const logo = el('img', 'sq-logo');
+      logo.src = 'assets/tha-logo.png';
+      logo.alt = '';
+      logo.draggable = false;
+      sq.append(logo);
+    } else {
+      sq.append(icon(linkIcon(link), 'sq-icon'));
+    }
+    sq.append(el('span', 'sq-label', link.title));
+    sq.title = link.url;
+    sq.addEventListener('click', (event) => openLink(link, event));
+    tiles.append(sq);
+  }
+
+  renderFeed();
   if (body.classList.contains('start')) revealStart(false);
 }
 
-$('start-search').addEventListener('click', () => address.focus());
+function feedItems() {
+  if (feedTab === 'favorites') return lib.bookmarks.filter((b) => b.favorite).map((b) => ({ ...b, kind: 'Favorite' }));
+  if (feedTab === 'reading') return lib.readingList.map((r) => ({ ...r, kind: 'Reading list', ts: r.added }));
+  const seen = new Set();
+  const out = [];
+  for (const h of lib.history) {
+    if (seen.has(h.url)) continue;
+    seen.add(h.url);
+    out.push({ ...h, kind: 'Visited' });
+    if (out.length >= 9) break;
+  }
+  return out;
+}
+
+function renderFeed() {
+  for (const chip of document.querySelectorAll('#feed-chips .fchip')) chip.classList.toggle('active', chip.dataset.feed === feedTab);
+  $('view-tiles').classList.toggle('active', feedView === 'tiles');
+  $('view-list').classList.toggle('active', feedView === 'list');
+  const box = $('feed-items');
+  box.className = 'feed-items ' + feedView;
+  box.textContent = '';
+  const items = feedItems();
+  if (!items.length) {
+    box.append(el('p', 'empty', feedTab === 'recent' ? 'Pages you visit show up here.' : feedTab === 'favorites' ? 'Add favorites with the bookmark menu (⌘D).' : 'Pages you save to read later show up here.'));
+    return;
+  }
+  for (const item of items) {
+    const card = el('button', 'news ' + feedView);
+    const hue = hueOf(hostOf(item.url));
+    const top = el('div', 'news-top');
+    top.style.background = `linear-gradient(135deg, hsl(${hue} 45% 22%), hsl(${(hue + 40) % 360} 50% 12%))`;
+    top.append(siteIcon(item.favicon, item.url, 'large'));
+    if (feedView === 'tiles') top.append(el('span', 'news-kind', item.kind));
+    const text = el('div', 'news-body');
+    if (feedView === 'list') text.append(el('span', 'news-kind inline', item.kind));
+    text.append(el('strong', 'news-title', item.title || hostOf(item.url)));
+    const meta = el('div', 'news-meta');
+    meta.append(icon('clock', 'news-clock'), el('span', '', item.ts ? ago(item.ts) : hostOf(item.url)));
+    if (item.ts) meta.append(el('span', 'news-host', hostOf(item.url)));
+    text.append(meta);
+    card.append(top, text);
+    card.title = item.url;
+    card.addEventListener('click', (event) => act('nav.open', item.url, event.metaKey || event.ctrlKey));
+    box.append(card);
+  }
+}
+
+for (const chip of document.querySelectorAll('#feed-chips .fchip')) {
+  chip.addEventListener('click', () => { feedTab = chip.dataset.feed; renderFeed(); });
+}
+for (const [id, view] of [['view-tiles', 'tiles'], ['view-list', 'list']]) {
+  $(id).addEventListener('click', () => {
+    feedView = view;
+    try { localStorage.setItem('thanary-feed-view', view); } catch { /* optional */ }
+    renderFeed();
+  });
+}
+
+// ---- search box with "Often visited" suggestions ----
+
+const startInput = $('start-input');
+const searchDrop = $('search-drop');
+
+function renderSearchDrop() {
+  const query = startInput.value.trim().toLowerCase();
+  let label = 'Often visited';
+  let items = lib.topSites.slice(0, 6);
+  if (query) {
+    label = 'Matches';
+    items = [];
+    const seen = new Set();
+    for (const entry of [...lib.bookmarks, ...lib.history]) {
+      if (items.length >= 6) break;
+      if (seen.has(entry.url)) continue;
+      if (!(entry.title || '').toLowerCase().includes(query) && !entry.url.toLowerCase().includes(query)) continue;
+      seen.add(entry.url);
+      items.push(entry);
+    }
+  }
+  searchDrop.textContent = '';
+  if (!items.length) { searchDrop.hidden = true; return; }
+  searchDrop.append(el('div', 'drop-label', label));
+  for (const entry of items) {
+    const row = el('button', 'drop-row');
+    row.append(siteIcon(entry.favicon, entry.url, 'small'), el('span', 'drop-title', entry.title || hostOf(entry.url)), el('span', 'drop-host', hostOf(entry.url)));
+    row.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      act('nav.open', entry.url, false);
+      startInput.blur();
+    });
+    searchDrop.append(row);
+  }
+  searchDrop.hidden = false;
+}
+
+startInput.addEventListener('focus', renderSearchDrop);
+startInput.addEventListener('input', renderSearchDrop);
+startInput.addEventListener('blur', () => { searchDrop.hidden = true; });
+startInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && startInput.value.trim()) {
+    act('nav.go', startInput.value);
+    startInput.value = '';
+    startInput.blur();
+  } else if (event.key === 'Escape') {
+    startInput.blur();
+  }
+});
+$('start-go').addEventListener('click', () => {
+  if (startInput.value.trim()) { act('nav.go', startInput.value); startInput.value = ''; }
+  else startInput.focus();
+});
+
+// ---- left rail ----
+
+for (const button of document.querySelectorAll('.rail-btn')) {
+  button.addEventListener('click', () => {
+    if (button.dataset.app) { act('app.open', button.dataset.app, 'MyClient'); return; }
+    if (button.dataset.settings !== undefined) { openSettings(); return; }
+    if (button.dataset.pane) { act('set', 'sidebar', true); setPane(button.dataset.pane); return; }
+    if (button.dataset.feed) { feedTab = button.dataset.feed; renderFeed(); }
+    const target = button.dataset.go === 'top' ? $('portal') : $(button.dataset.go);
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    for (const other of document.querySelectorAll('.rail-btn')) other.classList.toggle('active', other === button);
+  });
+}
+
 
 // Fades the start page in, one element after another.
 function revealStart(replay) {
@@ -742,7 +981,7 @@ function renderOverview(animate) {
       img.src = thumbs[tab.id];
       thumb.append(img);
     } else {
-      thumb.append(tab.url ? siteIcon(tab.favicon, tab.url, 'large') : icon('grid', 'ov-start'));
+      thumb.append(tab.url ? siteIcon(tab.favicon, tab.url, 'large') : brandFavicon('ov-brand'));
     }
     const close = el('button', 'ov-close');
     close.innerHTML = ICONS.close;
@@ -867,10 +1106,15 @@ const setEngine = $('set-engine');
 const setName = $('set-name');
 const setModel = $('set-model');
 
-function openSettings(pane) {
+function openSettings(target) {
+  const pane = target && typeof target === 'object' ? target.pane : target;
   openModal('settings');
   setSettingsPane(pane || settingsPane);
   renderSettings();
+  if (target && typeof target === 'object' && target.prefillUrl) {
+    $('login-url').value = target.prefillUrl;
+    $('login-user').focus();
+  }
 }
 
 function setSettingsPane(name) {
@@ -898,6 +1142,7 @@ function renderSettings() {
   $('about-version').textContent = `Version ${state.version}`;
   $('about-engine').textContent = `Chromium ${state.versions.chrome} · Electron ${state.versions.electron}`;
   renderLinksEditor();
+  renderLogins();
   renderAdblock();
   renderUpdate();
 }
@@ -943,20 +1188,27 @@ function drawLinks() {
     url.value = link.url;
     url.placeholder = 'https://…';
     url.spellcheck = false;
+    const group = el('input');
+    group.type = 'text';
+    group.value = link.group || '';
+    group.placeholder = 'Group';
+    group.maxLength = 30;
+    group.spellcheck = false;
     const remove = el('button', 'tb small');
     remove.innerHTML = ICONS.close;
     remove.title = 'Remove link';
     title.addEventListener('input', () => { link.title = title.value; saveLinks(); });
     url.addEventListener('input', () => { link.url = url.value.trim(); saveLinks(); });
+    group.addEventListener('input', () => { link.group = group.value; saveLinks(); });
     remove.addEventListener('click', () => { linkDraft.splice(index, 1); drawLinks(); saveLinks(); });
-    row.append(title, url, remove);
+    row.append(title, url, group, remove);
     list.append(row);
   });
 }
 
 $('add-link').addEventListener('click', () => {
   if (!linkDraft) linkDraft = [];
-  linkDraft.push({ title: '', url: 'https://', favicon: null });
+  linkDraft.push({ title: '', url: 'https://', group: 'Links', favicon: null });
   drawLinks();
   const rows = $('links-list').querySelectorAll('.link-row');
   rows[rows.length - 1].querySelector('input').focus();
@@ -1057,7 +1309,7 @@ function renderAI() {
   }
   for (const message of aiHistory) {
     const bubble = el('div', 'ai-msg ' + (message.error ? 'error' : message.role));
-    bubble.textContent = message.content;
+    bubble.textContent = message.display || message.content;
     log.append(bubble);
   }
   if (aiBusy) log.append(el('div', 'ai-msg assistant thinking', 'Thinking…'));
@@ -1112,6 +1364,136 @@ function showWhatsNew(info) {
 }
 
 $('wn-done').addEventListener('click', closeModal);
+
+// ---------- Auto-Login settings ----------
+
+let loginEditId = null;
+let loginsSig = '';
+
+function hostOfOrigin(origin) {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return origin;
+  }
+}
+
+function miniSwitch(label, checked, onChange) {
+  const wrap = el('label', 'mini');
+  const input = el('input');
+  input.type = 'checkbox';
+  input.checked = !!checked;
+  input.addEventListener('change', () => onChange(input.checked));
+  const sw = el('span', 'switch');
+  sw.append(input, el('span'));
+  wrap.append(el('em', '', label), sw);
+  return wrap;
+}
+
+function renderLogins() {
+  $('set-autologin').checked = !!state.settings.autoLogin;
+  const sig = JSON.stringify(state.logins);
+  if (sig === loginsSig) return;
+  loginsSig = sig;
+  const list = $('logins-list');
+  list.textContent = '';
+  if (!state.logins.length) {
+    list.append(el('p', 'empty', 'No saved logins yet.'));
+    return;
+  }
+  for (const login of state.logins) {
+    const row = el('div', 'login-row');
+    const info = el('div', 'login-info');
+    info.append(el('strong', '', hostOfOrigin(login.origin)), el('span', '', login.username));
+    const edit = el('button', 'btn', 'Edit');
+    edit.addEventListener('click', () => startLoginEdit(login));
+    const remove = el('button', 'tb small');
+    remove.innerHTML = ICONS.close;
+    remove.title = 'Remove login';
+    remove.addEventListener('click', () => act('login.remove', login.id));
+    row.append(
+      info,
+      miniSwitch('On', login.enabled, (value) => act('login.update', login.id, { enabled: value })),
+      miniSwitch('Sign in', login.autoSubmit, (value) => act('login.update', login.id, { autoSubmit: value })),
+      edit,
+      remove,
+    );
+    list.append(row);
+  }
+}
+
+function resetLoginForm() {
+  loginEditId = null;
+  $('login-url').value = '';
+  $('login-user').value = '';
+  $('login-pass').value = '';
+  $('login-pass').placeholder = 'Password';
+  $('login-auto').checked = false;
+  $('login-form-title').textContent = 'Add a login';
+  $('login-save').textContent = 'Save Login';
+  $('login-cancel').hidden = true;
+}
+
+function startLoginEdit(login) {
+  loginEditId = login.id;
+  $('login-url').value = login.origin;
+  $('login-user').value = login.username;
+  $('login-pass').value = '';
+  $('login-pass').placeholder = 'Leave blank to keep the saved password';
+  $('login-auto').checked = !!login.autoSubmit;
+  $('login-form-title').textContent = 'Edit login';
+  $('login-save').textContent = 'Save Changes';
+  $('login-cancel').hidden = false;
+  $('login-note').textContent = '';
+  $('login-user').focus();
+}
+
+$('set-autologin').addEventListener('change', (event) => act('set', 'autoLogin', event.target.checked));
+$('login-cancel').addEventListener('click', () => { resetLoginForm(); $('login-note').textContent = ''; });
+$('login-current').addEventListener('click', () => {
+  const tab = activeTab();
+  if (!tab || !/^https?:\/\//i.test(tab.url)) { $('login-note').textContent = 'Open the website in a tab first.'; return; }
+  try {
+    $('login-url').value = new URL(tab.url).origin;
+  } catch {
+    // keep what was typed
+  }
+});
+$('login-save').addEventListener('click', () => {
+  $('login-note').textContent = '';
+  act('login.save', {
+    id: loginEditId,
+    url: $('login-url').value.trim(),
+    username: $('login-user').value.trim(),
+    password: $('login-pass').value,
+    autoSubmit: $('login-auto').checked,
+  });
+});
+
+function onLoginResult(result) {
+  if (result && result.ok) {
+    resetLoginForm();
+    $('login-note').textContent = 'Saved.';
+    loginsSig = '';
+  } else {
+    $('login-note').textContent = (result && result.error) || 'Could not save the login.';
+  }
+}
+
+// ---------- Right-click "Ask AI" on selected text ----------
+
+function runAIOnSelection(payload) {
+  if (!payload || !payload.selection) return;
+  openModal('ai');
+  aiHistory = [];
+  aiBusy = true;
+  aiSeq += 1;
+  const content = `${payload.instruction}\n\n"""\n${payload.selection}\n"""`;
+  const short = payload.selection.length > 160 ? payload.selection.slice(0, 160) + '…' : payload.selection;
+  aiHistory.push({ role: 'user', content, display: `${payload.instruction}\n“${short}”` });
+  renderAI();
+  act('ai.ask', aiSeq, [{ role: 'user', content }], false);
+}
 
 // ---------- Updates from the main process ----------
 
@@ -1201,6 +1583,10 @@ B.on('cmd', (name, payload) => {
     openSettings(payload);
   } else if (name === 'whatsnew') {
     showWhatsNew(payload);
+  } else if (name === 'ai-run') {
+    runAIOnSelection(payload);
+  } else if (name === 'login-result') {
+    onLoginResult(payload);
   } else if (name === 'ai') {
     openAI();
   } else if (name === 'ai-token') {
