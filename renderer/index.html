@@ -8,16 +8,108 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="tabstrip">
-    <div id="tabs"></div>
-    <button id="new-tab" title="New tab (Ctrl/Cmd+T)" aria-label="New tab">+</button>
-  </div>
-  <div id="toolbar">
-    <button id="back" title="Back" aria-label="Back">&#8249;</button>
-    <button id="forward" title="Forward" aria-label="Forward">&#8250;</button>
-    <button id="reload" title="Reload" aria-label="Reload">&#10227;</button>
-    <input id="address" type="text" spellcheck="false" autocomplete="off"
-           placeholder="Search or enter address" aria-label="Address bar">
+  <div id="app">
+
+    <aside id="sidebar" aria-label="Sidebar">
+      <div class="sb-head drag"></div>
+      <div id="panes">
+        <section class="pane" data-pane="root">
+          <h2 class="sb-label">Tab Groups</h2>
+          <div id="groups" class="rows"></div>
+          <button id="new-group" class="row ghost"><i data-icon="plus"></i><span>New Tab Group</span></button>
+          <h2 class="sb-label">Collections</h2>
+          <div class="rows">
+            <button class="row nav" data-open="bookmarks"><i data-icon="book"></i><span>Bookmarks</span><i class="chev" data-icon="chevR"></i></button>
+            <button class="row nav" data-open="reading"><i data-icon="glasses"></i><span>Reading List</span><i class="chev" data-icon="chevR"></i></button>
+            <button class="row nav" data-open="history"><i data-icon="clock"></i><span>History</span><i class="chev" data-icon="chevR"></i></button>
+          </div>
+        </section>
+
+        <section class="pane" data-pane="bookmarks">
+          <header class="pane-head"><button class="back" data-open="root"><i data-icon="chevL"></i></button><h2>Bookmarks</h2></header>
+          <div id="bookmarks" class="pane-body"></div>
+        </section>
+
+        <section class="pane" data-pane="reading">
+          <header class="pane-head"><button class="back" data-open="root"><i data-icon="chevL"></i></button><h2>Reading List</h2></header>
+          <div id="reading" class="pane-body"></div>
+        </section>
+
+        <section class="pane" data-pane="history">
+          <header class="pane-head">
+            <button class="back" data-open="root"><i data-icon="chevL"></i></button><h2>History</h2>
+            <button id="clear-history" class="text-btn">Clear</button>
+          </header>
+          <div id="history" class="pane-body"></div>
+        </section>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="toolbar" class="drag">
+        <div class="tb-side left">
+          <button id="toggle-sidebar" class="tb" title="Show Sidebar" aria-label="Show Sidebar"><i data-icon="sidebar"></i></button>
+          <button id="back" class="tb" title="Back" aria-label="Back"><i data-icon="chevL"></i></button>
+          <button id="forward" class="tb" title="Forward" aria-label="Forward"><i data-icon="chevR"></i></button>
+        </div>
+
+        <div id="address-wrap">
+          <div id="address-field">
+            <div id="address-display"><i id="lock" data-icon="lock"></i><span id="address-host"></span></div>
+            <input id="address" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="Search or enter website name" aria-label="Address and search">
+            <button id="reload" class="in-field" title="Reload" aria-label="Reload"><i data-icon="reload"></i></button>
+            <div id="progress"></div>
+          </div>
+        </div>
+
+        <div class="tb-side right">
+          <button id="page-menu" class="tb" title="Bookmark or share this page" aria-label="Bookmark or share this page"><i data-icon="share"></i></button>
+          <button id="new-tab" class="tb" title="New Tab" aria-label="New Tab"><i data-icon="plus"></i></button>
+          <button id="overview-btn" class="tb" title="Tab Overview" aria-label="Tab Overview"><i data-icon="grid"></i></button>
+        </div>
+      </header>
+
+      <nav id="favbar" aria-label="Favorites"><div id="favs"></div></nav>
+      <div id="tabbar"><div id="tabs" role="tablist"></div></div>
+
+      <div id="findbar">
+        <i data-icon="search"></i>
+        <input id="find-input" type="text" spellcheck="false" autocomplete="off" placeholder="Find on page" aria-label="Find on page">
+        <span id="find-count"></span>
+        <button id="find-prev" class="tb small" title="Previous" aria-label="Previous match"><i data-icon="chevL"></i></button>
+        <button id="find-next" class="tb small" title="Next" aria-label="Next match"><i data-icon="chevR"></i></button>
+        <button id="find-done" class="text-btn">Done</button>
+      </div>
+
+      <div id="page">
+        <div id="start">
+          <div class="start-inner">
+            <h1 id="greeting" class="reveal"></h1>
+            <p id="subgreeting" class="reveal"></p>
+            <section class="start-section" id="sec-favorites">
+              <h3 class="reveal">Favorites</h3>
+              <div class="tiles" id="start-favs"></div>
+            </section>
+            <section class="start-section" id="sec-frequent">
+              <h3 class="reveal">Frequently Visited</h3>
+              <div class="tiles" id="start-frequent"></div>
+            </section>
+            <section class="start-section" id="sec-reading">
+              <h3 class="reveal">Reading List</h3>
+              <div class="cards" id="start-reading"></div>
+            </section>
+          </div>
+        </div>
+
+        <div id="overview">
+          <div id="overview-head"><h2 id="overview-title"></h2></div>
+          <div id="overview-grid"></div>
+        </div>
+      </div>
+    </main>
+
+    <div id="suggest" role="listbox"></div>
   </div>
   <script src="renderer.js"></script>
 </body>

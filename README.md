@@ -3,6 +3,16 @@
 A simple desktop web browser for macOS and Windows, built on Electron (Chromium).
 Updates are delivered through GitHub Releases.
 
+## Features
+
+- Toolbar with a combined address and search field, suggestions from bookmarks and history
+- Tabs you can drag to reorder, and a tab overview with page previews (Cmd/Ctrl+Shift+\)
+- Sidebar (Cmd/Ctrl+Shift+L) with tab groups, bookmarks, reading list and history
+- Favorites bar (Cmd/Ctrl+Shift+B) and a start page with favorites and frequently visited sites
+- Find on page (Cmd/Ctrl+F)
+- Tabs, groups, bookmarks and history are saved in `thanary-state.json` in the app's data folder
+  and restored on launch
+
 ## Run it
 
 ```bash

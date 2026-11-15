@@ -1,15 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-// The only things the toolbar page is allowed to ask the main process to do.
+const CHANNELS = ['state', 'library', 'cmd'];
+
+// The only things the chrome page can do: ask the main process for a named
+// action (main.js checks the name against its own list) and listen for updates.
 contextBridge.exposeInMainWorld('browser', {
   platform: process.platform,
-  newTab: () => ipcRenderer.send('tab:new'),
-  closeTab: (id) => ipcRenderer.send('tab:close', id),
-  switchTab: (id) => ipcRenderer.send('tab:switch', id),
-  go: (text) => ipcRenderer.send('nav:go', text),
-  back: () => ipcRenderer.send('nav:back'),
-  forward: () => ipcRenderer.send('nav:forward'),
-  reload: () => ipcRenderer.send('nav:reload'),
-  onState: (callback) => ipcRenderer.on('state', (_event, state) => callback(state)),
-  onFocusAddress: (callback) => ipcRenderer.on('focus-address', () => callback()),
+  act: (name, ...args) => ipcRenderer.send('act', name, ...args),
+  on: (channel, callback) => {
+    if (CHANNELS.includes(channel)) ipcRenderer.on(channel, (_event, ...args) => callback(...args));
+  },
 });
